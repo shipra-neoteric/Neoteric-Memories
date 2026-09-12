@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
 import type { Role } from '@neoteric-memories/shared'
-import { apiFetch, ApiError } from '../lib/api'
+import { apiFetch, ApiError, setCsrfToken } from '../lib/api'
 
 export interface AuthUser {
   id: string
@@ -25,8 +25,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const refresh = async () => {
     try {
-      const res = await apiFetch<{ user: AuthUser }>('/api/admin/auth/me')
+      const res = await apiFetch<{ user: AuthUser; csrfToken?: string }>('/api/admin/auth/me')
       setUser(res.user)
+      setCsrfToken(res.csrfToken)
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) setUser(null)
       else throw err
@@ -48,13 +49,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const login = async (email: string, password: string) => {
-    const res = await apiFetch<{ user: AuthUser }>('/api/admin/auth/login', { method: 'POST', body: { email, password } })
+    const res = await apiFetch<{ user: AuthUser; csrfToken: string }>('/api/admin/auth/login', { method: 'POST', body: { email, password } })
     setUser(res.user)
+    setCsrfToken(res.csrfToken)
   }
 
   const logout = async () => {
     await apiFetch('/api/admin/auth/logout', { method: 'POST' })
     setUser(null)
+    setCsrfToken(undefined)
   }
 
   return <AuthContext.Provider value={{ user, loading, login, logout, refresh }}>{children}</AuthContext.Provider>

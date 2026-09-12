@@ -52,6 +52,11 @@ authRouter.get(
   '/me',
   requireAuth,
   asyncHandler(async (req, res) => {
-    res.json({ user: req.user })
+    // The CSRF cookie itself is cross-origin-unreadable by frontend JS (Vercel/Render
+    // are different origins), even though the browser still sends it automatically —
+    // so echo its current value back in the body too, exactly like /login and
+    // /refresh do, letting a page reload (which only calls /me, not /login) recover a
+    // usable token for subsequent state-changing requests.
+    res.json({ user: req.user, csrfToken: req.cookies?.[COOKIE_NAMES.CSRF] })
   })
 )

@@ -20,6 +20,20 @@ function readCookie(name: string): string | undefined {
   return match ? decodeURIComponent(match[1]) : undefined
 }
 
+// The CSRF cookie is set by the API's own origin (Render), which is a different
+// origin from this app (Vercel) in production — document.cookie can only ever read
+// cookies belonging to THIS page's origin, never the API's, even though the browser
+// still attaches the cookie automatically to credentialed requests. So the token
+// value must come from the response body instead (every endpoint that sets/rotates
+// it — /login, /refresh, /me — echoes it back in the JSON), not from reading the
+// cookie. Kept in memory only, reset on a full page reload just like the admin
+// session itself.
+let inMemoryCsrfToken: string | undefined
+
+export function setCsrfToken(token: string | undefined): void {
+  inMemoryCsrfToken = token
+}
+
 function deviceId(): string {
   const key = 'nm_device_id'
   let id = localStorage.getItem(key)
@@ -46,7 +60,9 @@ export async function apiFetch<T = unknown>(
   }
 
   if (method !== 'GET') {
-    const csrf = readCookie('nm_csrf')
+    // Same-origin dev (Vite's proxy) can still read the cookie directly; cross-origin
+    // production relies on the in-memory value set from a prior response body.
+    const csrf = inMemoryCsrfToken ?? readCookie('nm_csrf')
     if (csrf) headers['X-CSRF-Token'] = csrf
   }
 
