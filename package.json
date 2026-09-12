@@ -1,0 +1,27 @@
+{
+  "name": "neoteric-memories",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Neoteric Memories — event-based face-search photo discovery for Neoteric Properties",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "dev:api": "npm run dev -w @neoteric-memories/api",
+    "dev:web": "npm run dev -w @neoteric-memories/web",
+    "build": "npm run build -w @neoteric-memories/shared && npm run build -w @neoteric-memories/api && npm run build -w @neoteric-memories/web",
+    "typecheck": "npm run typecheck -w @neoteric-memories/shared && npm run typecheck -w @neoteric-memories/api && npm run typecheck -w @neoteric-memories/web",
+    "lint": "npm run lint -w @neoteric-memories/api && npm run lint -w @neoteric-memories/web",
+    "test": "npm run test -w @neoteric-memories/api",
+    "test:e2e": "npm run test:e2e -w @neoteric-memories/web",
+    "seed": "npm run seed -w @neoteric-memories/api",
+    "worker": "npm run worker -w @neoteric-memories/api"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

@@ -1,0 +1,29 @@
+# Optional — Neoteric Memories does not require Docker. By default the API auto-boots
+# an ephemeral, in-process MongoDB when DATABASE_URL is unset (see apps/api/src/db.ts).
+# Use this file if you'd rather run a real, persistent local MongoDB via Docker instead
+# (data survives restarts, closer to a shared-team setup) or want a local instance to
+# point a MongoDB GUI at. Either way, production should point DATABASE_URL at a real
+# MongoDB Atlas cluster — see docs/AWS_DEPLOYMENT.md and docs/ENVIRONMENT.md.
+#
+# Usage:
+#   docker compose up -d
+#   Then set apps/api/.env:  DATABASE_URL=mongodb://localhost:27017/neoteric_memories?replicaSet=rs0
+#
+# NOTE: Prisma's MongoDB connector requires the database to be a replica set (even a
+# single-node one) to support transactions — the command below initializes one.
+services:
+  mongo:
+    image: mongo:7
+    command: ["--replSet", "rs0", "--bind_ip_all"]
+    ports:
+      - '27017:27017'
+    volumes:
+      - neoteric_mongo_data:/data/db
+    healthcheck:
+      test: echo "try { rs.status() } catch (e) { rs.initiate({_id:'rs0',members:[{_id:0,host:'localhost:27017'}]}) }" | mongosh --quiet
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  neoteric_mongo_data:

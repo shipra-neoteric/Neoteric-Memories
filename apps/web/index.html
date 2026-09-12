@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Neoteric Memories</title>
+    <!--
+      Deliberately no external font CDN here. Guests scan this at a live event over
+      venue wifi/cellular — an extra network dependency on Google Fonts is a real
+      reliability risk (and hung/blocked in this project's own sandboxed test
+      environment). The CSS font-family stack ("Inter", system-ui, sans-serif) still
+      picks up Inter if it's already installed/cached, and falls back to the
+      platform's own UI font otherwise, which reads as native and is always instant.
+    -->
+
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

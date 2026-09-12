@@ -1,0 +1,531 @@
+// Neoteric Memories — Prisma schema (MongoDB connector)
+//
+// NOTE on data model vs. the L1 spec: "Role" and "Permission" are modelled as a
+// static enum + code matrix (packages/shared/src/rbac.ts) rather than DB tables.
+// L1 does not need admin-editable permission sets; every role's permission ceiling
+// is fixed and reviewed in code. See docs/RBAC.md. Promoting these to DB-backed,
+// admin-editable tables is a recommended L2 improvement.
+//
+// NOTE on MongoDB vs. relational Postgres (originally suggested default): MongoDB
+// has no DB-level foreign keys, cascading deletes, or transactional schema
+// migrations. All referential integrity and cascade-on-delete logic (critical for
+// "biometric records must actually be removed") is enforced in application code —
+// see apps/api/src/modules/events/deleteEventCascade.ts and
+// apps/api/src/modules/photos/deletePhotoCascade.ts. Schema changes are applied with
+// `prisma db push` rather than `prisma migrate`.
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "./generated/client"
+}
+
+datasource db {
+  provider = "mongodb"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  MASTER_ADMIN
+  MARKETING_HEAD
+  EVENT_MANAGER
+  PHOTOGRAPHER
+  SUPPORT_EXECUTIVE
+}
+
+enum EventType {
+  FESTIVAL
+  CUSTOMER_MEET
+  POSSESSION_CEREMONY
+  PROJECT_LAUNCH
+  SITE_VISIT
+  OTHER
+}
+
+enum EventStatus {
+  DRAFT
+  UPLOADING
+  PROCESSING
+  READY
+  LIVE
+  PAUSED
+  CLOSED
+  EXPIRED
+  ARCHIVED
+}
+
+enum EventAssignmentRole {
+  EVENT_MANAGER
+  PHOTOGRAPHER
+}
+
+enum PhotoStatus {
+  PENDING
+  PROCESSING
+  PROCESSED
+  FAILED
+  NO_FACES
+  ARCHIVED
+  DELETED
+}
+
+enum BatchStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  PARTIAL_FAILURE
+  FAILED
+}
+
+enum GuestSessionStatus {
+  ACTIVE
+  EXPIRED
+  DELETED
+  BLOCKED
+}
+
+enum FaceSearchStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+  RATE_LIMITED
+}
+
+enum MatchConfidenceBand {
+  HIGH
+  MEDIUM
+  LOW
+}
+
+enum DownloadJobType {
+  SINGLE
+  ZIP
+}
+
+enum DownloadJobStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+  EXPIRED
+}
+
+enum WrongMatchStatus {
+  OPEN
+  REVIEWED
+  DISMISSED
+}
+
+enum BackgroundJobType {
+  PHOTO_PROCESS
+  ZIP_GENERATE
+  RETENTION_SWEEP
+  SELFIE_DELETE
+  EVENT_COLLECTION_DELETE
+  DRIVE_SYNC
+}
+
+enum DriveIntegrationStatus {
+  PENDING_FOLDER
+  ACTIVE
+  PAUSED
+  ERROR
+}
+
+enum BackgroundJobStatus {
+  QUEUED
+  RUNNING
+  SUCCEEDED
+  FAILED
+}
+
+model User {
+  id               String             @id @default(auto()) @map("_id") @db.ObjectId
+  name             String
+  email            String             @unique
+  passwordHash     String
+  role             Role
+  isActive         Boolean            @default(true)
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+  siteAccess       UserSiteAccess[]
+  eventAssignments EventAssignment[]
+
+  @@index([role])
+}
+
+model Site {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  name      String
+  code      String   @unique
+  address   String?
+  city      String?
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  userAccess UserSiteAccess[]
+}
+
+model AdminSession {
+  id         String    @id @default(auto()) @map("_id") @db.ObjectId
+  userId     String    @db.ObjectId
+  tokenHash  String    @unique
+  userAgent  String?
+  ipHash     String?
+  createdAt  DateTime  @default(now())
+  expiresAt  DateTime
+  revokedAt  DateTime?
+
+  @@index([userId])
+}
+
+model UserSiteAccess {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId    String   @db.ObjectId
+  user      User     @relation(fields: [userId], references: [id])
+  siteId    String   @db.ObjectId
+  site      Site     @relation(fields: [siteId], references: [id])
+  createdAt DateTime @default(now())
+
+  @@unique([userId, siteId])
+  @@index([siteId])
+}
+
+model Event {
+  id     String      @id @default(auto()) @map("_id") @db.ObjectId
+  name   String
+  type   EventType
+  status EventStatus @default(DRAFT)
+
+  siteId String @db.ObjectId
+
+  venue                        String
+  description                  String?
+  coverImageKey                String?
+  startAt                      DateTime
+  endAt                        DateTime
+  guestAccessOpensAt           DateTime
+  guestAccessExpiresAt         DateTime
+  faceIndexDeleteAt            DateTime
+  originalPhotoRetentionUntil  DateTime
+
+  consentVersionId String? @db.ObjectId
+
+  /// Overrides the system-wide default high-confidence threshold (0-100) for this event only. Must be calibrated — see docs/FACE_PROVIDER.md.
+  matchThreshold Float?
+
+  likelyIncludesChildren      Boolean @default(false)
+  guardianAssistedFlow        Boolean @default(false)
+  selfieUploadFallbackEnabled Boolean @default(false)
+
+  /// Provider-facing collection id, always neoteric-event-{id} — enforces event isolation.
+  faceCollectionId     String
+  faceCollectionReady  Boolean  @default(false)
+
+  createdById String    @db.ObjectId
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  closedAt    DateTime?
+  archivedAt  DateTime?
+  deletedAt   DateTime?
+
+  @@index([siteId])
+  @@index([status])
+  @@index([guestAccessExpiresAt])
+}
+
+model EventAssignment {
+  id        String              @id @default(auto()) @map("_id") @db.ObjectId
+  eventId   String              @db.ObjectId
+  userId    String              @db.ObjectId
+  user      User                @relation(fields: [userId], references: [id])
+  role      EventAssignmentRole
+  createdAt DateTime            @default(now())
+
+  @@unique([eventId, userId])
+  @@index([userId])
+}
+
+model EventAccessToken {
+  id            String    @id @default(auto()) @map("_id") @db.ObjectId
+  eventId       String    @db.ObjectId
+  /// SHA-256 of the raw public token. The raw token is NEVER stored — only issued once in the QR/link.
+  tokenHash     String    @unique
+  isActive      Boolean   @default(true)
+  expiresAt     DateTime
+  createdById   String    @db.ObjectId
+  createdAt     DateTime  @default(now())
+  revokedAt     DateTime?
+  revokedReason String?
+
+  @@index([eventId])
+}
+
+model ConsentVersion {
+  id           String   @id @default(auto()) @map("_id") @db.ObjectId
+  label        String
+  requiredText Json
+  optionalText Json
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+}
+
+model GuestSession {
+  id             String              @id @default(auto()) @map("_id") @db.ObjectId
+  eventId        String              @db.ObjectId
+  status         GuestSessionStatus  @default(ACTIVE)
+  ipHash         String
+  deviceHash     String
+  userAgent      String?
+  selfieAttempts Int                 @default(0)
+  searchCount    Int                 @default(0)
+  createdAt      DateTime            @default(now())
+  expiresAt      DateTime
+  deletedAt      DateTime?
+
+  @@index([eventId])
+  @@index([deviceHash, eventId])
+  @@index([expiresAt])
+}
+
+model ConsentRecord {
+  id               String   @id @default(auto()) @map("_id") @db.ObjectId
+  guestSessionId   String   @db.ObjectId
+  eventId          String   @db.ObjectId
+  consentVersionId String   @db.ObjectId
+  requiredAccepted Json
+  optionalAccepted Json
+  guardianAssisted Boolean  @default(false)
+  ipHash           String
+  userAgent        String?
+  createdAt        DateTime @default(now())
+
+  @@index([guestSessionId])
+  @@index([eventId])
+}
+
+model PhotoBatch {
+  id             String      @id @default(auto()) @map("_id") @db.ObjectId
+  eventId        String      @db.ObjectId
+  uploadedById   String      @db.ObjectId
+  status         BatchStatus @default(PENDING)
+  totalCount     Int         @default(0)
+  processedCount Int         @default(0)
+  failedCount    Int         @default(0)
+  createdAt      DateTime    @default(now())
+  completedAt    DateTime?
+
+  @@index([eventId])
+}
+
+model Photo {
+  id               String      @id @default(auto()) @map("_id") @db.ObjectId
+  eventId          String      @db.ObjectId
+  batchId          String?     @db.ObjectId
+  originalKey      String
+  thumbnailKey     String?
+  previewKey       String?
+  fileHash         String
+  originalFilename String
+  mimeType         String
+  sizeBytes        Int
+  status           PhotoStatus @default(PENDING)
+  faceCount        Int         @default(0)
+  hasQualityWarning Boolean    @default(false)
+  uploadedById     String      @db.ObjectId
+  processingError  String?
+  isArchived       Boolean     @default(false)
+  deletedAt        DateTime?
+  createdAt        DateTime    @default(now())
+  updatedAt        DateTime    @updatedAt
+
+  @@unique([eventId, fileHash])
+  @@index([eventId, status])
+  @@index([batchId])
+}
+
+model IndexedFace {
+  id             String   @id @default(auto()) @map("_id") @db.ObjectId
+  photoId        String   @db.ObjectId
+  eventId        String   @db.ObjectId
+  providerFaceId String
+  boundingBox    Json
+  confidence     Float
+  quality        String?
+  createdAt      DateTime @default(now())
+
+  @@unique([eventId, providerFaceId, photoId])
+  @@index([eventId])
+  @@index([photoId])
+}
+
+model FaceSearch {
+  id                 String            @id @default(auto()) @map("_id") @db.ObjectId
+  eventId            String            @db.ObjectId
+  guestSessionId     String            @db.ObjectId
+  status             FaceSearchStatus  @default(PENDING)
+  selfieHash         String?
+  selfieDeletedAt    DateTime?
+  providerRequestId  String?
+  errorMessage       String?
+  resultCount        Int               @default(0)
+  createdAt          DateTime          @default(now())
+  completedAt        DateTime?
+
+  @@index([eventId])
+  @@index([guestSessionId])
+}
+
+model FaceMatch {
+  id             String               @id @default(auto()) @map("_id") @db.ObjectId
+  faceSearchId   String               @db.ObjectId
+  photoId        String               @db.ObjectId
+  providerFaceId String
+  similarity     Float
+  confidenceBand MatchConfidenceBand
+  createdAt      DateTime             @default(now())
+
+  @@unique([faceSearchId, photoId])
+  @@index([faceSearchId])
+  @@index([photoId])
+}
+
+model DownloadJob {
+  id                  String            @id @default(auto()) @map("_id") @db.ObjectId
+  guestSessionId      String            @db.ObjectId
+  faceSearchId        String?           @db.ObjectId
+  photoIds            Json
+  type                DownloadJobType
+  status              DownloadJobStatus @default(PENDING)
+  zipKey              String?
+  signedUrlExpiresAt  DateTime?
+  errorMessage        String?
+  createdAt           DateTime          @default(now())
+  completedAt         DateTime?
+
+  @@index([guestSessionId])
+}
+
+model WrongMatchReport {
+  id             String            @id @default(auto()) @map("_id") @db.ObjectId
+  eventId        String            @db.ObjectId
+  guestSessionId String            @db.ObjectId
+  photoId        String            @db.ObjectId
+  note           String?
+  status         WrongMatchStatus  @default(OPEN)
+  reviewedById   String?           @db.ObjectId
+  reviewedAt     DateTime?
+  createdAt      DateTime          @default(now())
+
+  @@index([eventId])
+  @@index([status])
+}
+
+model RetentionPolicy {
+  id                           String   @id @default(auto()) @map("_id") @db.ObjectId
+  label                        String
+  guestSessionTtlHours         Int
+  galleryAccessTtlHours        Int
+  signedUrlTtlMinutes          Int
+  selfieMaxRetentionHours      Int
+  eventFaceIndexRetentionDays  Int
+  isDefault                    Boolean  @default(false)
+  createdAt                    DateTime @default(now())
+}
+
+model AuditLog {
+  id         String   @id @default(auto()) @map("_id") @db.ObjectId
+  actorId    String?  @db.ObjectId
+  actorRole  String?
+  action     String
+  entityType String
+  entityId   String?
+  siteId     String?  @db.ObjectId
+  eventId    String?  @db.ObjectId
+  metadata   Json?
+  ipHash     String?
+  createdAt  DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@index([eventId])
+  @@index([createdAt])
+}
+
+model SecurityEvent {
+  id             String   @id @default(auto()) @map("_id") @db.ObjectId
+  type           String
+  severity       String   @default("INFO")
+  eventId        String?  @db.ObjectId
+  guestSessionId String?  @db.ObjectId
+  ipHash         String?
+  deviceHash     String?
+  detail         Json?
+  createdAt      DateTime @default(now())
+
+  @@index([type])
+  @@index([eventId])
+  @@index([createdAt])
+}
+
+model SystemSetting {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  key       String   @unique
+  value     Json
+  updatedAt DateTime @updatedAt
+}
+
+/// One Google Drive folder continuously synced into one event's photo library.
+/// refreshTokenEnc is AES-256-GCM encrypted at rest (see lib/tokenCrypto.ts) — the
+/// raw OAuth refresh token is never stored in plaintext.
+model DriveIntegration {
+  id              String                 @id @default(auto()) @map("_id") @db.ObjectId
+  eventId         String                 @unique @db.ObjectId
+  connectedById   String                 @db.ObjectId
+  googleAccountEmail String?
+  refreshTokenEnc String
+  folderId        String?
+  folderName      String?
+  status          DriveIntegrationStatus @default(PENDING_FOLDER)
+  lastSyncedAt    DateTime?
+  lastError       String?
+  importedCount   Int                    @default(0)
+  createdAt       DateTime               @default(now())
+  updatedAt       DateTime               @updatedAt
+
+  @@index([status])
+}
+
+/// Internal state store for MockFaceSearchProvider ONLY — simulates what a real
+/// provider (Rekognition) keeps server-side in its own collection. Not part of the
+/// core domain model; the app never queries this directly, only through the
+/// FaceSearchProvider interface. Swapped out entirely when FACE_PROVIDER=rekognition.
+model MockFaceIndexEntry {
+  id             String   @id @default(auto()) @map("_id") @db.ObjectId
+  eventId        String   @db.ObjectId
+  photoId        String   @db.ObjectId
+  providerFaceId String   @unique
+  colorId        String
+  boundingBox    Json
+  confidence     Float
+  createdAt      DateTime @default(now())
+
+  @@index([eventId])
+  @@index([photoId])
+}
+
+model BackgroundJob {
+  id              String              @id @default(auto()) @map("_id") @db.ObjectId
+  type            BackgroundJobType
+  status          BackgroundJobStatus @default(QUEUED)
+  payload         Json
+  idempotencyKey  String              @unique
+  attempts        Int                 @default(0)
+  maxAttempts     Int                 @default(3)
+  lastError       String?
+  runAfter        DateTime            @default(now())
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  @@index([status, runAfter])
+}

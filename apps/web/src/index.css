@@ -1,0 +1,37 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --theme-primary: #f97316;
+  --theme-primary-light: #fb923c;
+  --theme-primary-dark: #ea580c;
+}
+
+html {
+  font-family: 'Inter', system-ui, sans-serif;
+}
+
+body {
+  @apply bg-gray-50 text-gray-900 dark:bg-gray-900 dark:text-gray-100;
+}
+
+.theme-bg { background-color: var(--theme-primary); }
+.theme-bg-hover:hover { background-color: var(--theme-primary-dark); }
+.theme-text { color: var(--theme-primary); }
+.theme-border { border-color: var(--theme-primary); }
+.theme-ring { --tw-ring-color: var(--theme-primary); }
+.theme-nav-hover:hover { color: var(--theme-primary); }
+
+input[type='number']::-webkit-inner-spin-button,
+input[type='number']::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.custom-scrollbar::-webkit-scrollbar { width: 8px; height: 8px; }
+.custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(249, 115, 22, 0.35); border-radius: 9999px; }
+.custom-scrollbar::-webkit-scrollbar-thumb:hover { background: rgba(249, 115, 22, 0.6); }
+.custom-scrollbar { scrollbar-width: thin; }
+
+.swal2-container { z-index: 99999 !important; }

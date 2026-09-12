@@ -1,0 +1,5 @@
+{
+  "buildCommand": "npm run build -w @neoteric-memories/shared && npm run build -w @neoteric-memories/web",
+  "outputDirectory": "apps/web/dist",
+  "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }]
+}

@@ -1,0 +1,55 @@
+# Render Blueprint — deploys the API as a single web service (HTTP server +
+# background worker run embedded in the same process, same as local dev; see
+# apps/api/src/server.ts). Import this repo at https://dashboard.render.com/blueprints
+# and Render will read this file automatically, or create the service manually using
+# the same commands/env vars below — see docs/DEPLOYMENT.md for the full walkthrough
+# (most env vars need real values only you have — Atlas connection string, AWS
+# credentials, etc — Render will prompt for anything marked sync:false).
+services:
+  - type: web
+    name: neoteric-memories-api
+    runtime: node
+    plan: starter
+    region: singapore # pick whatever is closest to your guests; Atlas/S3 should be in the same region
+    buildCommand: npm install && npm run build -w @neoteric-memories/shared && npm run build -w @neoteric-memories/api
+    startCommand: node apps/api/dist/src/server.js
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 4000
+      - key: APP_BASE_URL
+        sync: false # your Vercel frontend URL, e.g. https://neoteric-memories.vercel.app
+      - key: API_BASE_URL
+        sync: false # this service's own Render URL, e.g. https://neoteric-memories-api.onrender.com
+      - key: DATABASE_URL
+        sync: false # MongoDB Atlas connection string — see docs/DEPLOYMENT.md
+      - key: JWT_SECRET
+        generateValue: true
+      - key: COOKIE_SECRET
+        generateValue: true
+      - key: STORAGE_PROVIDER
+        value: s3
+      - key: S3_BUCKET
+        sync: false
+      - key: S3_REGION
+        sync: false
+      - key: S3_ACCESS_KEY_ID
+        sync: false
+      - key: S3_SECRET_ACCESS_KEY
+        sync: false
+      - key: FACE_PROVIDER
+        value: mock # switch to "rekognition" once AWS is set up — see docs/AWS_DEPLOYMENT.md
+      - key: AWS_REGION
+        sync: false
+      - key: AWS_ACCESS_KEY_ID
+        sync: false
+      - key: AWS_SECRET_ACCESS_KEY
+        sync: false
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: GOOGLE_OAUTH_REDIRECT_URI
+        sync: false # https://<this service's URL>/api/admin/integrations/google/callback
