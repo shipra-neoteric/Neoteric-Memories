@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { getPrisma } from '../../src/db.js'
 import { processZipGenerate } from '../../src/jobs/processors/zipGenerate.js'
 import { processSelfieDelete } from '../../src/jobs/processors/selfieDelete.js'
-import { renderSyntheticPhoto } from '../../prisma/seedImages.js'
+import { renderSyntheticPhoto } from '../../src/devSeed/seedImages.js'
 import { app, setupLiveEvent } from '../helpers.js'
 
 const validConsentBody = {

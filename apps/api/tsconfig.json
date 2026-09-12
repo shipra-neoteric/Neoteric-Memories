@@ -2,10 +2,17 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "outDir": "dist",
+    "rootDir": "src",
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "lib": ["ES2022"],
     "types": ["node"]
   },
-  "include": ["src", "prisma"]
+  // Deliberately src-only: prisma/*.ts (seed.ts, bootstrapAdmin.ts, ...) are ops
+  // scripts run directly via `tsx`, never through the compiled dist output. Compiling
+  // them here would put dist/src/*.js under an extra directory level, which breaks
+  // db.ts's relative import of the generated Prisma client (prisma/generated/client/
+  // is a fixed path outside outDir, computed only correctly at one level up from
+  // src/db.ts — see docs/DEPLOYMENT.md).
+  "include": ["src"]
 }

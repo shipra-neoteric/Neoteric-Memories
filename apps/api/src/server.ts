@@ -11,7 +11,7 @@ if (usingEphemeralDb) {
   // Zero-config demo mode: no DATABASE_URL means we just booted a throwaway
   // in-process MongoDB (see db.ts) — auto-seed it so `npm run dev:api` alone is
   // enough to get a fully working, pre-populated demo with zero external services.
-  const { runSeed } = await import('../prisma/seedRunner.js')
+  const { runSeed } = await import('./devSeed/seedRunner.js')
   await runSeed()
 }
 

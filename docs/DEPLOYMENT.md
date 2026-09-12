@@ -52,6 +52,6 @@ This is the exact path chosen for Neoteric Memories: static frontend on Vercel, 
 
 ## Notes
 
-- The background worker (photo processing, retention, Drive sync) runs embedded in the same Render web service process — no separate worker service needed at this scale. If you outgrow a single instance, split it into its own Render **Background Worker** service running `node apps/api/dist/src/jobs/worker.js` (you'll need to also build that entrypoint — see `apps/api/src/jobs/worker.ts`).
+- The background worker (photo processing, retention, Drive sync) runs embedded in the same Render web service process — no separate worker service needed at this scale. If you outgrow a single instance, split it into its own Render **Background Worker** service running `node apps/api/dist/jobs/worker.js` (you'll need to also build that entrypoint — see `apps/api/src/jobs/worker.ts`).
 - Render's free tier spins the service down after inactivity and takes ~30-60s to wake up on the next request — fine for internal testing, **not** fine for a live event with guests scanning a QR code. Use at least a paid "Starter" instance (already the `plan: starter` in `render.yaml`) for the actual event day.
 - Redeploying Render restarts the process, which restarts the background worker and (only in zero-config ephemeral-DB mode, which you are **not** using once `DATABASE_URL` is set) would reseed — with a real `DATABASE_URL` set, redeploys never touch your data.

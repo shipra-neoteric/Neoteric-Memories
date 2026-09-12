@@ -71,7 +71,7 @@ export function futureDate(msFromNow: number): Date {
 export const DAY_MS = 24 * 60 * 60 * 1000
 
 export async function setupLiveEvent(markerPersonId: string | null, overrides: Record<string, unknown> = {}) {
-  const { renderSyntheticPhoto } = await import('../prisma/seedImages.js')
+  const { renderSyntheticPhoto } = await import('../src/devSeed/seedImages.js')
   const { processPhotoProcess } = await import('../src/jobs/processors/photoProcess.js')
 
   const site = await makeSite()

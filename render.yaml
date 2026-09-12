@@ -15,7 +15,7 @@ services:
     # `npm install` skip devDependencies, but @types/node, typescript, and prisma's
     # CLI (all needed only to build, not to run) all live there.
     buildCommand: npm install --include=dev && npm run build -w @neoteric-memories/shared && npm run build -w @neoteric-memories/api
-    startCommand: node apps/api/dist/src/server.js
+    startCommand: node apps/api/dist/server.js
     healthCheckPath: /health
     envVars:
       - key: NODE_ENV

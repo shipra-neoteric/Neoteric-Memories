@@ -4,7 +4,7 @@ import { runRetentionSweep } from '../../src/jobs/processors/retentionSweep.js'
 import { processEventCollectionDelete } from '../../src/jobs/processors/eventCollectionDelete.js'
 import { getStorageProvider } from '../../src/providers/storage/index.js'
 import { MockFaceSearchProvider } from '../../src/providers/faceSearch/MockFaceSearchProvider.js'
-import { renderSyntheticPhoto } from '../../prisma/seedImages.js'
+import { renderSyntheticPhoto } from '../../src/devSeed/seedImages.js'
 import { setupLiveEvent } from '../helpers.js'
 
 const FAKE_PHOTO_ID = '507f1f77bcf86cd799439099' // MockFaceIndexEntry.photoId is typed as a Mongo ObjectId (24 hex chars)

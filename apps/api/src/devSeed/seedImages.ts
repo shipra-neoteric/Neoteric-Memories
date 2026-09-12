@@ -1,5 +1,5 @@
 import sharp from 'sharp'
-import { PERSON_MARKERS } from '../src/providers/faceSearch/colorMarkers.js'
+import { PERSON_MARKERS } from '../providers/faceSearch/colorMarkers.js'
 
 export interface MarkerPlacement {
   personId: string

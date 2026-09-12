@@ -1,14 +1,14 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { getPrisma } from '../src/db.js'
-import { hashPassword } from '../src/lib/password.js'
-import { logger } from '../src/lib/logger.js'
-import { createEvent, transitionEventStatus, assignEventMember } from '../src/modules/events/service.js'
-import { generateEventAccessToken } from '../src/modules/events/accessTokens.js'
-import { checkEventReadiness } from '../src/modules/events/readiness.js'
-import { uploadPhotoBatch } from '../src/modules/photos/service.js'
-import { processPhotoProcess } from '../src/jobs/processors/photoProcess.js'
+import { getPrisma } from '../db.js'
+import { hashPassword } from '../lib/password.js'
+import { logger } from '../lib/logger.js'
+import { createEvent, transitionEventStatus, assignEventMember } from '../modules/events/service.js'
+import { generateEventAccessToken } from '../modules/events/accessTokens.js'
+import { checkEventReadiness } from '../modules/events/readiness.js'
+import { uploadPhotoBatch } from '../modules/photos/service.js'
+import { processPhotoProcess } from '../jobs/processors/photoProcess.js'
 import { renderSyntheticPhoto, renderSyntheticSelfie } from './seedImages.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -246,14 +246,15 @@ export async function runSeed(): Promise<void> {
   }
 
   // ---- Demo selfie fixtures (for the upload-fallback manual test path) ----
-  const selfiesDir = path.join(__dirname, '..', 'seed-assets', 'demo-selfies')
+  // __dirname is apps/api/src/devSeed, so '..','..' reaches apps/api.
+  const selfiesDir = path.join(__dirname, '..', '..', 'seed-assets', 'demo-selfies')
   await fs.mkdir(selfiesDir, { recursive: true })
   for (const personId of ['person-1', 'person-2', 'person-4']) {
     const buffer = await renderSyntheticSelfie(personId)
     await fs.writeFile(path.join(selfiesDir, `${personId}.jpg`), buffer)
   }
 
-  const outputPath = path.join(__dirname, '..', '.seed-output.json')
+  const outputPath = path.join(__dirname, '..', '..', '.seed-output.json')
   await fs.writeFile(outputPath, JSON.stringify(seedOutput, null, 2))
 
   logger.info({}, '')

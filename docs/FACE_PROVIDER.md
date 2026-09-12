@@ -25,7 +25,7 @@ Every method is event-scoped by design — this is the actual enforcement point 
 How it works (`apps/api/src/providers/faceSearch/colorMarkers.ts` + `imageMarkerScan.ts`):
 
 - Eight reserved "identity" colors (`person-1` .. `person-8`) stand in for eight demo people.
-- A synthetic demo photo is a plain background with a solid-color square placed on it — the square's color is the "face". `apps/api/prisma/seedImages.ts` generates these.
+- A synthetic demo photo is a plain background with a solid-color square placed on it — the square's color is the "face". `apps/api/src/devSeed/seedImages.ts` generates these.
 - `detectFaces()`/`indexPhotoFaces()` scan the image on a grid, snap each sampled pixel to its nearest palette color (within a tolerance), and cluster matched points per identity into one bounding box per detected "face". Bigger square → higher detection confidence (simulates "small face in a crowd photo → lower confidence").
 - `searchEventBySelfie()` takes the selfie's most prominent detected color, computes Euclidean RGB distance to every indexed face's stored color within that event, and converts distance → a 0–99 similarity score. An exact color match scores ~99; a deliberately close-but-different shade scores lower and is correctly excluded once below the high-confidence threshold.
 

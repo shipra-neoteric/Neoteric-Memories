@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { getPrisma } from '../../src/db.js'
 import { processPhotoProcess } from '../../src/jobs/processors/photoProcess.js'
-import { renderSyntheticPhoto } from '../../prisma/seedImages.js'
+import { renderSyntheticPhoto } from '../../src/devSeed/seedImages.js'
 import { app, loginAsAgent, makeSite, makeUser, validEventPayload } from '../helpers.js'
 
 async function createLiveableEvent() {

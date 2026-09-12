@@ -6,7 +6,7 @@
 // instance if you want this command to populate the database your dev server reads.
 import { connectDatabase, disconnectDatabase } from '../src/db.js'
 import { logger } from '../src/lib/logger.js'
-import { runSeed } from './seedRunner.js'
+import { runSeed } from '../src/devSeed/seedRunner.js'
 
 await connectDatabase()
 try {

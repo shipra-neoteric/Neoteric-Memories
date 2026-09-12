@@ -73,7 +73,7 @@ Go to `http://localhost:5173/login` and use one of the seeded accounts (all shar
 
 Password for all: `NeotericDemo#2026`
 
-These are **development-only** credentials, seeded locally by `apps/api/prisma/seedRunner.ts` — never used in any deployed environment.
+These are **development-only** credentials, seeded locally by `apps/api/src/devSeed/seedRunner.ts` — never used in any deployed environment.
 
 ## 7. Try the guest journey
 

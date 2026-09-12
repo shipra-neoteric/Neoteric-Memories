@@ -18,7 +18,7 @@ npm run dev:web    # http://localhost:5173 — admin app + guest journey
 
 That's it. `npm run dev:api` prints demo login credentials and guest QR links to the console, and writes them to `apps/api/.seed-output.json`. See [docs/SETUP.md](docs/SETUP.md) for the full walkthrough, including how to open the actual guest QR flow in a browser.
 
-Demo admin login: `admin@neotericproperties.demo` / `NeotericDemo#2026` (all seeded users share this password — see `apps/api/prisma/seedRunner.ts`).
+Demo admin login: `admin@neotericproperties.demo` / `NeotericDemo#2026` (all seeded users share this password — see `apps/api/src/devSeed/seedRunner.ts`).
 
 ---
 
