@@ -1,17 +1,10 @@
-import { useEffect, useRef, useState } from 'react'
+import { useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Camera, RotateCcw, Upload, AlertTriangle } from 'lucide-react'
+import { Camera, RotateCcw, Upload, AlertTriangle, RefreshCw } from 'lucide-react'
 import { useGuestFlow } from './GuestFlowContext'
+import { useCameraStream } from './useCameraStream'
 import { Button } from '../components/ui/Button'
 import { ApiError, apiFetch } from '../lib/api'
-
-// 'busy' = getUserMedia resolved to NotReadableError/TrackStartError (camera exists
-// but is held by another app, or a hardware/driver fault) — distinct from 'denied'
-// (user said no) and 'unavailable' (no camera device at all), since the fix for each
-// is different. 'insecure' = the page itself isn't allowed to use the camera at all
-// (see docs/PILOT_TESTING.md — only https:// or http://localhost are secure
-// contexts; a plain http://<lan-ip> origin never even reaches getUserMedia).
-type CameraState = 'requesting' | 'ready' | 'denied' | 'unavailable' | 'busy' | 'insecure'
 
 const REJECTION_COPY: Record<string, string> = {
   INVALID_IMAGE: 'That did not look like a valid photo. Please try again.',
@@ -49,65 +42,14 @@ export function GuestSelfie() {
   const navigate = useNavigate()
   const videoRef = useRef<HTMLVideoElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
-  const streamRef = useRef<MediaStream | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
-  const [cameraState, setCameraState] = useState<CameraState>('requesting')
-  const [videoReady, setVideoReady] = useState(false)
+  const { cameraState, videoReady, playErrorName, retry } = useCameraStream(videoRef)
   const [capturedBlob, setCapturedBlob] = useState<Blob | null>(null)
   const [capturedUrl, setCapturedUrl] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [lockedOut, setLockedOut] = useState(false)
-
-  useEffect(() => {
-    // A secure context is required for getUserMedia at all (https://, or
-    // http://localhost) — a plain http://<lan-ip> origin (e.g. testing from a phone
-    // over local wifi) never reaches the permission prompt, and the resulting
-    // failure otherwise looks identical to "no camera". Checking this explicitly
-    // gives a correct, actionable message instead of a misleading one.
-    if (!window.isSecureContext) {
-      setCameraState('insecure')
-      return
-    }
-    if (!navigator.mediaDevices?.getUserMedia) {
-      setCameraState('unavailable')
-      return
-    }
-    let cancelled = false
-    navigator.mediaDevices
-      .getUserMedia({ video: { facingMode: 'user', width: { ideal: 720 } }, audio: false })
-      .then((stream) => {
-        if (cancelled) {
-          stream.getTracks().forEach((t) => t.stop())
-          return
-        }
-        streamRef.current = stream
-        if (videoRef.current) videoRef.current.srcObject = stream
-        setCameraState('ready')
-      })
-      .catch((err: unknown) => {
-        // getUserMedia rejects with a DOMException whose `name` distinguishes why —
-        // these three map to genuinely different fixes, so REJECTION_COPY-style
-        // generic handling would hide that from the guest.
-        const name = err instanceof DOMException ? err.name : ''
-        if (name === 'NotReadableError' || name === 'TrackStartError') setCameraState('busy')
-        else if (name === 'NotFoundError' || name === 'DevicesNotFoundError') setCameraState('unavailable')
-        else setCameraState('denied') // NotAllowedError/PermissionDeniedError, and any unrecognized failure
-      })
-    return () => {
-      cancelled = true
-      streamRef.current?.getTracks().forEach((t) => t.stop())
-    }
-  }, [])
-
-  /** Fires on the video element's loadedmetadata/canplay — the earliest point at
-   * which videoWidth/videoHeight are reliably non-zero and a captured frame will
-   * actually contain a real image instead of whatever the canvas defaults to. */
-  function handleVideoReady() {
-    const video = videoRef.current
-    if (video && video.videoWidth > 0 && video.videoHeight > 0) setVideoReady(true)
-  }
 
   function capture() {
     const video = videoRef.current
@@ -207,46 +149,61 @@ export function GuestSelfie() {
       <div className="relative aspect-[3/4] w-full bg-black rounded-xl overflow-hidden">
         {capturedUrl ? (
           <img src={capturedUrl} alt="Captured selfie" className="w-full h-full object-cover" />
-        ) : cameraState === 'ready' ? (
+        ) : (
           <>
+            {/* Kept mounted for the entire camera lifecycle, not just once
+               cameraState becomes 'ready' — this is what makes "getUserMedia
+               resolves before the video ref exists" structurally rare rather than a
+               race to guard against with retries/polling. */}
             <video
               ref={videoRef}
               autoPlay
-              playsInline
               muted
-              onLoadedMetadata={handleVideoReady}
-              onCanPlay={handleVideoReady}
-              className="w-full h-full object-cover -scale-x-100"
+              playsInline
+              className={`w-full h-full object-cover -scale-x-100 ${cameraState === 'ready' || cameraState === 'initializing' ? '' : 'hidden'}`}
             />
-            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-              <div className="w-[62%] aspect-[3/4] rounded-[50%] border-4 border-white/70" />
-            </div>
-            {!videoReady && (
+            {cameraState === 'ready' && (
+              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                <div className="w-[62%] aspect-[3/4] rounded-[50%] border-4 border-white/70" />
+              </div>
+            )}
+            {cameraState === 'initializing' && (
               <div className="absolute inset-0 flex items-center justify-center bg-black/40">
                 <p className="text-sm text-white/80">Starting camera…</p>
               </div>
             )}
-          </>
-        ) : (
-          <div className="w-full h-full flex flex-col items-center justify-center text-center gap-2 px-6">
-            {cameraState === 'requesting' && <p className="text-sm text-white/70">Requesting camera access…</p>}
-            {(cameraState === 'denied' || cameraState === 'unavailable' || cameraState === 'busy' || cameraState === 'insecure') && (
-              <>
-                <Camera className="w-8 h-8 text-white/40" />
-                <p className="text-sm text-white/80">
-                  {cameraState === 'denied' && 'Camera access was denied.'}
-                  {cameraState === 'unavailable' && 'No camera is available on this device.'}
-                  {cameraState === 'busy' && 'Your camera is busy or unavailable — it may be in use by another app.'}
-                  {cameraState === 'insecure' && 'The camera is unavailable on this address (needs HTTPS to be accessible).'}
-                </p>
-                {event?.selfieUploadFallbackEnabled ? (
-                  <p className="text-xs text-white/60">You can upload a photo instead below.</p>
-                ) : (
-                  <p className="text-xs text-white/60">Please enable camera access in your browser, or ask event staff for help.</p>
+            {cameraState !== 'ready' && cameraState !== 'initializing' && (
+              <div className="w-full h-full flex flex-col items-center justify-center text-center gap-2 px-6">
+                {cameraState === 'requesting' && <p className="text-sm text-white/70">Requesting camera access…</p>}
+                {cameraState !== 'requesting' && (
+                  <>
+                    <Camera className="w-8 h-8 text-white/40" />
+                    <p className="text-sm text-white/80">
+                      {cameraState === 'denied' && 'Camera access was denied.'}
+                      {cameraState === 'unavailable' && 'No camera is available on this device.'}
+                      {cameraState === 'busy' &&
+                        (playErrorName
+                          ? `Could not start the camera preview (${playErrorName}). It may be in use by another app.`
+                          : 'Your camera is busy or unavailable — it may be in use by another app.')}
+                      {cameraState === 'insecure' && 'The camera is unavailable on this address (needs HTTPS to be accessible).'}
+                      {cameraState === 'timeout' &&
+                        'Camera started but no video frame was received. Close other camera apps, check Chrome camera settings, and try again.'}
+                    </p>
+                    {event?.selfieUploadFallbackEnabled ? (
+                      <p className="text-xs text-white/60">You can upload a photo instead below.</p>
+                    ) : (
+                      <p className="text-xs text-white/60">Please enable camera access in your browser, or ask event staff for help.</p>
+                    )}
+                    {cameraState !== 'insecure' && (
+                      <Button variant="secondary" className="mt-1" icon={<RefreshCw className="w-4 h-4" />} onClick={retry}>
+                        Retry camera
+                      </Button>
+                    )}
+                  </>
                 )}
-              </>
+              </div>
             )}
-          </div>
+          </>
         )}
       </div>
       <canvas ref={canvasRef} className="hidden" />
