@@ -9,7 +9,7 @@ build/
 coverage/
 playwright-report/
 test-results/
-storage/
+/apps/api/storage/
 apps/api/prisma/generated/
 apps/api/.mongodb-memory-server/
 apps/api/test/.storage/
