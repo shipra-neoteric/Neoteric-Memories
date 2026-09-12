@@ -97,9 +97,14 @@ export async function performSelfieSearch(
 
   const storage = getStorageProvider()
   const selfieKey = storageKeys.selfie(eventId, search.id)
-  await storage.putObject({ key: selfieKey, body: selfieBuffer, contentType: 'image/jpeg' })
 
   try {
+    // Storing the selfie was previously unguarded here — a real (if rare) S3 failure
+    // at this exact point would propagate as a raw, unhandled 500 instead of the
+    // same clean "search failed, try again" response every other failure in this
+    // block already gets.
+    await storage.putObject({ key: selfieKey, body: selfieBuffer, contentType: 'image/jpeg' })
+
     const rawMatches = await faceProvider.searchEventBySelfie({
       eventId,
       selfieBuffer,

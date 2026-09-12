@@ -5,7 +5,13 @@ import { useGuestFlow } from './GuestFlowContext'
 import { Button } from '../components/ui/Button'
 import { ApiError, apiFetch } from '../lib/api'
 
-type CameraState = 'requesting' | 'ready' | 'denied' | 'unavailable'
+// 'busy' = getUserMedia resolved to NotReadableError/TrackStartError (camera exists
+// but is held by another app, or a hardware/driver fault) — distinct from 'denied'
+// (user said no) and 'unavailable' (no camera device at all), since the fix for each
+// is different. 'insecure' = the page itself isn't allowed to use the camera at all
+// (see docs/PILOT_TESTING.md — only https:// or http://localhost are secure
+// contexts; a plain http://<lan-ip> origin never even reaches getUserMedia).
+type CameraState = 'requesting' | 'ready' | 'denied' | 'unavailable' | 'busy' | 'insecure'
 
 const REJECTION_COPY: Record<string, string> = {
   INVALID_IMAGE: 'That did not look like a valid photo. Please try again.',
@@ -13,6 +19,29 @@ const REJECTION_COPY: Record<string, string> = {
   MULTIPLE_FACES_DETECTED: 'We detected more than one face. Please make sure only you are in the frame.',
   FACE_TOO_SMALL: 'Your face is too small in the frame. Please move closer.',
   PROCESSING_FAILED: 'Something went wrong while processing your selfie. Please try again.',
+}
+
+/** Downsamples the captured frame to a small grid and checks for near-uniform, near-black content — catches a broken/blocked camera producing a solid black frame that getUserMedia() itself has no way to detect (permission was genuinely granted). Never inspects/logs actual pixel values, only the derived mean/variance. */
+function looksBlank(source: HTMLCanvasElement): boolean {
+  const SAMPLE = 24
+  const sampleCanvas = document.createElement('canvas')
+  sampleCanvas.width = SAMPLE
+  sampleCanvas.height = SAMPLE
+  const ctx = sampleCanvas.getContext('2d', { willReadFrequently: true })
+  if (!ctx) return false
+  ctx.drawImage(source, 0, 0, SAMPLE, SAMPLE)
+  const { data } = ctx.getImageData(0, 0, SAMPLE, SAMPLE)
+  const n = SAMPLE * SAMPLE
+  let sum = 0
+  let sumSq = 0
+  for (let i = 0; i < data.length; i += 4) {
+    const luma = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]
+    sum += luma
+    sumSq += luma * luma
+  }
+  const mean = sum / n
+  const variance = sumSq / n - mean * mean
+  return mean < 8 && variance < 4
 }
 
 export function GuestSelfie() {
@@ -24,6 +53,7 @@ export function GuestSelfie() {
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const [cameraState, setCameraState] = useState<CameraState>('requesting')
+  const [videoReady, setVideoReady] = useState(false)
   const [capturedBlob, setCapturedBlob] = useState<Blob | null>(null)
   const [capturedUrl, setCapturedUrl] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
@@ -31,6 +61,15 @@ export function GuestSelfie() {
   const [lockedOut, setLockedOut] = useState(false)
 
   useEffect(() => {
+    // A secure context is required for getUserMedia at all (https://, or
+    // http://localhost) — a plain http://<lan-ip> origin (e.g. testing from a phone
+    // over local wifi) never reaches the permission prompt, and the resulting
+    // failure otherwise looks identical to "no camera". Checking this explicitly
+    // gives a correct, actionable message instead of a misleading one.
+    if (!window.isSecureContext) {
+      setCameraState('insecure')
+      return
+    }
     if (!navigator.mediaDevices?.getUserMedia) {
       setCameraState('unavailable')
       return
@@ -47,24 +86,57 @@ export function GuestSelfie() {
         if (videoRef.current) videoRef.current.srcObject = stream
         setCameraState('ready')
       })
-      .catch(() => setCameraState('denied'))
+      .catch((err: unknown) => {
+        // getUserMedia rejects with a DOMException whose `name` distinguishes why —
+        // these three map to genuinely different fixes, so REJECTION_COPY-style
+        // generic handling would hide that from the guest.
+        const name = err instanceof DOMException ? err.name : ''
+        if (name === 'NotReadableError' || name === 'TrackStartError') setCameraState('busy')
+        else if (name === 'NotFoundError' || name === 'DevicesNotFoundError') setCameraState('unavailable')
+        else setCameraState('denied') // NotAllowedError/PermissionDeniedError, and any unrecognized failure
+      })
     return () => {
       cancelled = true
       streamRef.current?.getTracks().forEach((t) => t.stop())
     }
   }, [])
 
+  /** Fires on the video element's loadedmetadata/canplay — the earliest point at
+   * which videoWidth/videoHeight are reliably non-zero and a captured frame will
+   * actually contain a real image instead of whatever the canvas defaults to. */
+  function handleVideoReady() {
+    const video = videoRef.current
+    if (video && video.videoWidth > 0 && video.videoHeight > 0) setVideoReady(true)
+  }
+
   function capture() {
     const video = videoRef.current
     const canvas = canvasRef.current
-    if (!video || !canvas) return
+    if (!video || !canvas || !video.videoWidth || !video.videoHeight) {
+      setErrorMessage('Camera is not ready yet. Please wait a moment and try again.')
+      return
+    }
     canvas.width = video.videoWidth
     canvas.height = video.videoHeight
     const ctx = canvas.getContext('2d')
     ctx?.drawImage(video, 0, 0, canvas.width, canvas.height)
+
+    if (looksBlank(canvas)) {
+      setErrorMessage(
+        'Your camera appears to be showing a black image. Check your camera privacy settings, close other apps using the camera, or try a different camera, then try again.'
+      )
+      return
+    }
+
     canvas.toBlob(
       (blob) => {
-        if (!blob) return
+        if (!blob || blob.size === 0) {
+          setErrorMessage('Could not capture a photo. Please try again.')
+          return
+        }
+        // Safe diagnostics only — never the image bytes themselves.
+        // eslint-disable-next-line no-console
+        console.log('[selfie] captured frame', { mimeType: blob.type, byteCount: blob.size, width: canvas.width, height: canvas.height })
         setCapturedBlob(blob)
         setCapturedUrl(URL.createObjectURL(blob))
       },
@@ -137,19 +209,35 @@ export function GuestSelfie() {
           <img src={capturedUrl} alt="Captured selfie" className="w-full h-full object-cover" />
         ) : cameraState === 'ready' ? (
           <>
-            <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-cover -scale-x-100" />
+            <video
+              ref={videoRef}
+              autoPlay
+              playsInline
+              muted
+              onLoadedMetadata={handleVideoReady}
+              onCanPlay={handleVideoReady}
+              className="w-full h-full object-cover -scale-x-100"
+            />
             <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
               <div className="w-[62%] aspect-[3/4] rounded-[50%] border-4 border-white/70" />
             </div>
+            {!videoReady && (
+              <div className="absolute inset-0 flex items-center justify-center bg-black/40">
+                <p className="text-sm text-white/80">Starting camera…</p>
+              </div>
+            )}
           </>
         ) : (
           <div className="w-full h-full flex flex-col items-center justify-center text-center gap-2 px-6">
             {cameraState === 'requesting' && <p className="text-sm text-white/70">Requesting camera access…</p>}
-            {(cameraState === 'denied' || cameraState === 'unavailable') && (
+            {(cameraState === 'denied' || cameraState === 'unavailable' || cameraState === 'busy' || cameraState === 'insecure') && (
               <>
                 <Camera className="w-8 h-8 text-white/40" />
                 <p className="text-sm text-white/80">
-                  {cameraState === 'denied' ? 'Camera access was denied.' : 'No camera is available on this device.'}
+                  {cameraState === 'denied' && 'Camera access was denied.'}
+                  {cameraState === 'unavailable' && 'No camera is available on this device.'}
+                  {cameraState === 'busy' && 'Your camera is busy or unavailable — it may be in use by another app.'}
+                  {cameraState === 'insecure' && 'The camera is unavailable on this address (needs HTTPS to be accessible).'}
                 </p>
                 {event?.selfieUploadFallbackEnabled ? (
                   <p className="text-xs text-white/60">You can upload a photo instead below.</p>
@@ -174,7 +262,7 @@ export function GuestSelfie() {
             </Button>
           </div>
         ) : cameraState === 'ready' ? (
-          <Button variant="primary" className="w-full py-3 text-base" icon={<Camera className="w-5 h-5" />} onClick={capture}>
+          <Button variant="primary" className="w-full py-3 text-base" icon={<Camera className="w-5 h-5" />} onClick={capture} disabled={!videoReady}>
             Capture selfie
           </Button>
         ) : null}
