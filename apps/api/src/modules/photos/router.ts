@@ -1,3 +1,5 @@
+import os from 'node:os'
+import crypto from 'node:crypto'
 import { Router } from 'express'
 import multer from 'multer'
 import { z } from 'zod'
@@ -15,8 +17,18 @@ export const photosRouter = Router({ mergeParams: true })
 const idParams = z.object({ id: objectIdSchema })
 const photoParams = z.object({ id: objectIdSchema, photoId: objectIdSchema })
 
+// Streams straight to a temp file per upload instead of buffering every file in a
+// large batch in RAM simultaneously (multer.memoryStorage() would hold the whole
+// batch in memory at once — for a big enough batch on a memory-constrained instance
+// that's enough to crash/restart the process partway through, silently leaving only
+// however many files had already made it into the DB by that point, with no error
+// ever surfacing to the client). service.ts's uploadPhotoBatch reads each file's
+// bytes from disk one at a time and deletes the temp file once it's done with it.
 const upload = multer({
-  storage: multer.memoryStorage(),
+  storage: multer.diskStorage({
+    destination: os.tmpdir(),
+    filename: (_req, _file, cb) => cb(null, `nm-upload-${crypto.randomUUID()}`),
+  }),
   limits: {
     fileSize: DEFAULTS.MAX_PHOTO_UPLOAD_MB * 1024 * 1024,
     files: DEFAULTS.MAX_BATCH_PHOTO_COUNT,
@@ -35,7 +47,7 @@ photosRouter.post(
 
     const outcome = await photoService.uploadPhotoBatch(
       req.params.id,
-      files.map((f) => ({ buffer: f.buffer, originalFilename: f.originalname, declaredMimeType: f.mimetype })),
+      files.map((f) => ({ filePath: f.path, originalFilename: f.originalname, declaredMimeType: f.mimetype })),
       req.user!
     )
     res.status(201).json(outcome)

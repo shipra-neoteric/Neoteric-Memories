@@ -85,6 +85,15 @@ export async function pauseOrResume(eventId: string, active: boolean, actor: { i
   return updated
 }
 
+// Downloading every new file with one big Promise.all() held every file's full bytes
+// in memory simultaneously — for a large folder that's enough to exhaust the
+// process's memory on a constrained instance, killing/restarting it partway through
+// and silently leaving only however many files had already reached uploadPhotoBatch
+// by then (with no error ever surfacing, since the crash isn't a clean rejection).
+// Downloading (and uploading) in small chunks bounds peak memory to one chunk's
+// worth of files, regardless of how many hundreds are in the folder.
+const DRIVE_SYNC_CHUNK_SIZE = 10
+
 /** Imports every new image in one connected folder since the last sync, through the exact same validation/dedupe/processing pipeline as a manual upload. */
 export async function syncOneIntegration(integration: {
   id: string
@@ -105,25 +114,32 @@ export async function syncOneIntegration(integration: {
     return { imported: 0 }
   }
 
-  const downloaded = await Promise.all(
-    newFiles.map(async (f) => ({
-      buffer: await downloadDriveFile(drive, f.id),
-      originalFilename: f.name,
-      declaredMimeType: f.mimeType,
-    }))
-  )
+  let accepted = 0
+  let duplicates = 0
+  let rejected = 0
+  const actor = { id: integration.connectedById, role: 'EVENT_MANAGER' }
 
-  const outcome = await uploadPhotoBatch(integration.eventId, downloaded, { id: integration.connectedById, role: 'EVENT_MANAGER' })
+  for (let i = 0; i < newFiles.length; i += DRIVE_SYNC_CHUNK_SIZE) {
+    const chunk = newFiles.slice(i, i + DRIVE_SYNC_CHUNK_SIZE)
+    const downloaded = await Promise.all(
+      chunk.map(async (f) => ({
+        buffer: await downloadDriveFile(drive, f.id),
+        originalFilename: f.name,
+        declaredMimeType: f.mimeType,
+      }))
+    )
+    const outcome = await uploadPhotoBatch(integration.eventId, downloaded, actor)
+    accepted += outcome.accepted.length
+    duplicates += outcome.duplicates.length
+    rejected += outcome.rejected.length
+  }
 
   await prisma.driveIntegration.update({
     where: { id: integration.id },
-    data: { lastSyncedAt: new Date(), importedCount: { increment: outcome.accepted.length }, lastError: null },
+    data: { lastSyncedAt: new Date(), importedCount: { increment: accepted }, lastError: null },
   })
-  logger.info(
-    { eventId: integration.eventId, accepted: outcome.accepted.length, duplicates: outcome.duplicates.length, rejected: outcome.rejected.length },
-    'Drive sync imported photos'
-  )
-  return { imported: outcome.accepted.length }
+  logger.info({ eventId: integration.eventId, accepted, duplicates, rejected }, 'Drive sync imported photos')
+  return { imported: accepted }
 }
 
 export async function runDriveSyncSweep(): Promise<{ integrationsSynced: number; photosImported: number }> {
