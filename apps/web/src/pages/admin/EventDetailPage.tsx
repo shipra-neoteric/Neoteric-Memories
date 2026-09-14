@@ -541,14 +541,20 @@ function DriveIntegrationCard({ eventId }: { eventId: string }) {
   })
 
   const syncNow = useMutation({
-    mutationFn: () => apiFetch<{ imported: number; summary: string }>(`/api/admin/events/${eventId}/drive/sync-now`, { method: 'POST' }),
-    onSuccess: (res) => {
-      if (res.imported > 0) toastSuccess(`Imported ${res.imported} new photo(s) from Drive`)
-      else toastError(res.summary) // "0 imported" always shows WHY now — nothing new, or found files that couldn't be used and the reason (e.g. unsupported format).
+    // The server responds immediately (202) and syncs in the background — a folder
+    // with a lot of files can take minutes, far too long to hold an HTTP request
+    // open for. The existing 15s polling on the integration query (below) picks up
+    // lastSyncSummary/importedCount once the sync actually finishes.
+    mutationFn: () => apiFetch<{ status: 'started' }>(`/api/admin/events/${eventId}/drive/sync-now`, { method: 'POST' }),
+    onSuccess: () => {
+      toastSuccess('Sync started — this can take a few minutes for a large folder. The card below will update automatically.')
       invalidate()
-      queryClient.invalidateQueries({ queryKey: ['event-photos', eventId] })
+      setTimeout(() => {
+        invalidate()
+        queryClient.invalidateQueries({ queryKey: ['event-photos', eventId] })
+      }, 8000)
     },
-    onError: (err) => toastError(err instanceof ApiError ? err.message : 'Sync failed'),
+    onError: (err) => toastError(err instanceof ApiError ? err.message : 'Could not start the sync'),
   })
 
   const togglePause = useMutation({

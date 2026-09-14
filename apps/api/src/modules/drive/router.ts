@@ -6,6 +6,7 @@ import { validateBody, validateParams } from '../../middleware/validate.js'
 import { requirePermission } from '../../middleware/rbac.js'
 import { getPrisma } from '../../db.js'
 import { Errors } from '../../lib/errors.js'
+import { logger } from '../../lib/logger.js'
 import * as driveService from './service.js'
 import { syncOneIntegration } from './service.js'
 
@@ -75,8 +76,18 @@ driveRouter.post(
   asyncHandler(async (req, res) => {
     const integration = await getPrisma().driveIntegration.findUnique({ where: { eventId: req.params.id } })
     if (!integration || !integration.folderId) throw Errors.notFound('No active Drive folder connection for this event')
-    const result = await syncOneIntegration(integration)
-    res.json(result)
+    // Deliberately not awaited: a sync can process dozens of files (each involving a
+    // Drive download, possible HEIC decode, and an S3 upload) and take well past any
+    // reasonable HTTP request timeout. Responding immediately and letting the client
+    // poll GET / (already on a 15s interval) for the result — via lastSyncSummary —
+    // is what stops a slow sync from holding an HTTP connection open at all, on top
+    // of MAX_FILES_PER_SYNC_RUN bounding how much work a single run can ever do.
+    void syncOneIntegration(integration).catch((err) => {
+      const message = err instanceof Error ? err.message : String(err)
+      logger.error({ eventId: integration.eventId }, `Manual Drive sync failed: ${message}`)
+      void getPrisma().driveIntegration.update({ where: { id: integration.id }, data: { status: 'ERROR', lastError: message } })
+    })
+    res.status(202).json({ status: 'started' })
   })
 )
 

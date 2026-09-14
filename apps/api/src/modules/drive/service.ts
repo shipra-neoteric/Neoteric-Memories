@@ -94,6 +94,19 @@ export async function pauseOrResume(eventId: string, active: boolean, actor: { i
 // worth of files, regardless of how many hundreds are in the folder.
 const DRIVE_SYNC_CHUNK_SIZE = 10
 
+// HEIC decoding (heicConvert.ts) runs a WASM codec on the main thread — each call
+// blocks Node's single event loop for however long that one image takes. A folder
+// with hundreds of HEIC files processed in one sync run can keep the WHOLE server
+// (every unrelated request, not just this one) starved for minutes, which is exactly
+// what took the entire admin panel down in production once. Capping how many files
+// one sync *run* will touch bounds the worst case regardless of folder size — the
+// rest gets picked up by the next scheduled run (every DRIVE_SYNC_INTERVAL_MINUTES),
+// so a big backlog drains gradually instead of overloading the server in one shot.
+// lastSyncedAt only advances once a run actually clears the whole backlog it found;
+// otherwise the next run re-lists it, safely re-skipping already-imported files via
+// uploadPhotoBatch's fileHash dedupe, and makes further progress.
+const MAX_FILES_PER_SYNC_RUN = 30
+
 /** Imports every new image in one connected folder since the last sync, through the exact same validation/dedupe/processing pipeline as a manual upload. */
 export async function syncOneIntegration(integration: {
   id: string
@@ -115,13 +128,16 @@ export async function syncOneIntegration(integration: {
     return { imported: 0, summary }
   }
 
+  const filesToProcess = newFiles.slice(0, MAX_FILES_PER_SYNC_RUN)
+  const remaining = newFiles.length - filesToProcess.length
+
   let accepted = 0
   let duplicates = 0
   const rejectedReasons = new Map<string, number>() // reason -> count, so a repeated cause (e.g. HEIC) collapses to one line instead of one per file
   const actor = { id: integration.connectedById, role: 'EVENT_MANAGER' }
 
-  for (let i = 0; i < newFiles.length; i += DRIVE_SYNC_CHUNK_SIZE) {
-    const chunk = newFiles.slice(i, i + DRIVE_SYNC_CHUNK_SIZE)
+  for (let i = 0; i < filesToProcess.length; i += DRIVE_SYNC_CHUNK_SIZE) {
+    const chunk = filesToProcess.slice(i, i + DRIVE_SYNC_CHUNK_SIZE)
     const downloaded = await Promise.all(
       chunk.map(async (f) => ({
         buffer: await downloadDriveFile(drive, f.id),
@@ -139,13 +155,21 @@ export async function syncOneIntegration(integration: {
   const summaryParts = [`${newFiles.length} found`, `${accepted} imported`]
   if (duplicates > 0) summaryParts.push(`${duplicates} already imported`)
   if (rejectedTotal > 0) summaryParts.push(`${rejectedTotal} rejected (${[...rejectedReasons.keys()].join('; ')})`)
+  if (remaining > 0) summaryParts.push(`${remaining} more queued for the next sync (processing this many at once could overload the server)`)
   const summary = summaryParts.join(' · ')
 
   await prisma.driveIntegration.update({
     where: { id: integration.id },
-    data: { lastSyncedAt: new Date(), importedCount: { increment: accepted }, lastError: null, lastSyncSummary: summary },
+    data: {
+      // Only advance past this run's files if there's nothing left over — otherwise
+      // the next run must re-list the same window to pick up what didn't fit here.
+      lastSyncedAt: remaining > 0 ? integration.lastSyncedAt ?? undefined : new Date(),
+      importedCount: { increment: accepted },
+      lastError: null,
+      lastSyncSummary: summary,
+    },
   })
-  logger.info({ eventId: integration.eventId, accepted, duplicates, rejected: rejectedTotal }, 'Drive sync imported photos')
+  logger.info({ eventId: integration.eventId, accepted, duplicates, rejected: rejectedTotal, remaining }, 'Drive sync imported photos')
   return { imported: accepted, summary }
 }
 
