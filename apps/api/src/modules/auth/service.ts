@@ -1,5 +1,6 @@
+import type { Permission } from '@neoteric-memories/shared'
 import { getPrisma } from '../../db.js'
-import { verifyPassword } from '../../lib/password.js'
+import { hashPassword, verifyPassword } from '../../lib/password.js'
 import { signAccessToken } from '../../lib/jwt.js'
 import { generateSecureToken, hashToken } from '../../lib/hash.js'
 import { env } from '../../env.js'
@@ -10,7 +11,7 @@ export interface LoginResult {
   accessToken: string
   refreshToken: string
   csrfToken: string
-  user: { id: string; name: string; email: string; role: string }
+  user: { id: string; name: string; email: string; role: string; permissions: Permission[] }
 }
 
 export async function login(
@@ -52,7 +53,7 @@ export async function login(
     accessToken,
     refreshToken: refreshTokenRaw,
     csrfToken: generateSecureToken(16),
-    user: { id: user.id, name: user.name, email: user.email, role: user.role },
+    user: { id: user.id, name: user.name, email: user.email, role: user.role, permissions: user.permissions as Permission[] },
   }
 }
 
@@ -91,7 +92,7 @@ export async function refresh(
     accessToken,
     refreshToken: newRefreshRaw,
     csrfToken: generateSecureToken(16),
-    user: { id: user.id, name: user.name, email: user.email, role: user.role },
+    user: { id: user.id, name: user.name, email: user.email, role: user.role, permissions: user.permissions as Permission[] },
   }
 }
 
@@ -100,4 +101,31 @@ export async function logout(rawRefreshToken: string | undefined): Promise<void>
   const prisma = getPrisma()
   const tokenHash = hashToken(rawRefreshToken)
   await prisma.adminSession.updateMany({ where: { tokenHash, revokedAt: null }, data: { revokedAt: new Date() } })
+}
+
+/**
+ * Self-service password change for the currently logged-in user. Also revokes every
+ * other active session for this user (same revokedAt pattern as logout) so a stolen
+ * session/cookie can't outlive a password change.
+ */
+export async function changePassword(
+  userId: string,
+  currentPassword: string,
+  newPassword: string,
+  ctx: { ipHash: string }
+): Promise<void> {
+  const prisma = getPrisma()
+  const user = await prisma.user.findUnique({ where: { id: userId } })
+  if (!user) throw Errors.unauthorized()
+
+  const valid = await verifyPassword(currentPassword, user.passwordHash)
+  if (!valid) {
+    await writeSecurityEvent({ type: 'AUTH_FAILURE', ipHash: ctx.ipHash, detail: { userId, reason: 'change_password_wrong_current' } })
+    throw Errors.forbidden('Current password is incorrect')
+  }
+
+  const passwordHash = await hashPassword(newPassword)
+  await prisma.user.update({ where: { id: userId }, data: { passwordHash } })
+  await prisma.adminSession.updateMany({ where: { userId, revokedAt: null }, data: { revokedAt: new Date() } })
+  await writeAuditLog({ actorId: userId, actorRole: user.role, action: 'auth.change_password', entityType: 'User', entityId: userId, ipHash: ctx.ipHash })
 }

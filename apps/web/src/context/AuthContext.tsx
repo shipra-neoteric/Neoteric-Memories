@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
-import type { Role } from '@neoteric-memories/shared'
+import type { Permission, Role } from '@neoteric-memories/shared'
 import { apiFetch, ApiError, setCsrfToken } from '../lib/api'
 
 export interface AuthUser {
@@ -7,6 +7,7 @@ export interface AuthUser {
   name: string
   email: string
   role: Role
+  permissions: Permission[]
 }
 
 interface AuthContextValue {

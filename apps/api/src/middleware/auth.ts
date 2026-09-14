@@ -1,3 +1,4 @@
+import type { Permission } from '@neoteric-memories/shared'
 import type { NextFunction, Request, Response } from 'express'
 import { COOKIE_NAMES } from '../lib/cookies.js'
 import { Errors } from '../lib/errors.js'
@@ -19,7 +20,7 @@ export const requireAuth = asyncHandler(async (req: Request, _res: Response, nex
   const user = await getPrisma().user.findUnique({ where: { id: payload.sub } })
   if (!user || !user.isActive) throw Errors.unauthorized('Account is inactive or no longer exists')
 
-  req.user = { id: user.id, role: user.role, name: user.name }
+  req.user = { id: user.id, role: user.role, name: user.name, permissions: user.permissions as Permission[] }
   next()
 })
 

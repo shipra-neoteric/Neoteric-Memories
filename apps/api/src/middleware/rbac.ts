@@ -1,5 +1,5 @@
 import type { NextFunction, Request, Response } from 'express'
-import { hasPermission, type Permission } from '@neoteric-memories/shared'
+import { hasUserPermission, type Permission } from '@neoteric-memories/shared'
 import { Errors } from '../lib/errors.js'
 import { getPrisma } from '../db.js'
 import { asyncHandler } from './asyncHandler.js'
@@ -7,7 +7,7 @@ import { asyncHandler } from './asyncHandler.js'
 export function requirePermission(permission: Permission) {
   return (req: Request, _res: Response, next: NextFunction) => {
     if (!req.user) throw Errors.unauthorized()
-    if (!hasPermission(req.user.role, permission)) throw Errors.forbidden()
+    if (!hasUserPermission(req.user, permission)) throw Errors.forbidden()
     next()
   }
 }

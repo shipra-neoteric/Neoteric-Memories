@@ -1,8 +1,8 @@
 import { Router } from 'express'
-import { loginSchema } from '@neoteric-memories/shared'
+import { changePasswordSchema, loginSchema } from '@neoteric-memories/shared'
 import { asyncHandler } from '../../middleware/asyncHandler.js'
 import { validateBody } from '../../middleware/validate.js'
-import { requireAuth } from '../../middleware/auth.js'
+import { requireAuth, requireCsrf } from '../../middleware/auth.js'
 import { adminLoginLimiter } from '../../middleware/rateLimit.js'
 import { clientIpHash } from '../../lib/request.js'
 import { clearAuthCookies, COOKIE_NAMES, setAccessCookie, setCsrfCookie, setRefreshCookie } from '../../lib/cookies.js'
@@ -58,5 +58,20 @@ authRouter.get(
     // /refresh do, letting a page reload (which only calls /me, not /login) recover a
     // usable token for subsequent state-changing requests.
     res.json({ user: req.user, csrfToken: req.cookies?.[COOKIE_NAMES.CSRF] })
+  })
+)
+
+authRouter.post(
+  '/change-password',
+  // Applied per-route (not via the admin sub-router) since authRouter is mounted
+  // before that CSRF-protected sub-router in app.ts — same reason /me applies
+  // requireAuth directly instead of relying on it being mounted elsewhere.
+  requireAuth,
+  requireCsrf,
+  validateBody(changePasswordSchema),
+  asyncHandler(async (req, res) => {
+    await authService.changePassword(req.user!.id, req.body.currentPassword, req.body.newPassword, { ipHash: clientIpHash(req) })
+    clearAuthCookies(res)
+    res.json({ success: true })
   })
 )

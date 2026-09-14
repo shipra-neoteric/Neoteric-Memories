@@ -1,10 +1,10 @@
 // Neoteric Memories — Prisma schema (MongoDB connector)
 //
-// NOTE on data model vs. the L1 spec: "Role" and "Permission" are modelled as a
-// static enum + code matrix (packages/shared/src/rbac.ts) rather than DB tables.
-// L1 does not need admin-editable permission sets; every role's permission ceiling
-// is fixed and reviewed in code. See docs/RBAC.md. Promoting these to DB-backed,
-// admin-editable tables is a recommended L2 improvement.
+// NOTE on data model vs. the L1 spec: "Role" is still a static enum (5 fixed
+// roles), but "Permission" is now DB-backed and admin-editable per-user
+// (User.permissions below), not a fixed code matrix — see packages/shared/src/rbac.ts
+// (hasUserPermission) and docs/RBAC.md for how role vs. per-user permissions vs.
+// site/event scoping fit together.
 //
 // NOTE on MongoDB vs. relational Postgres (originally suggested default): MongoDB
 // has no DB-level foreign keys, cascading deletes, or transactional schema
@@ -145,6 +145,14 @@ model User {
   email            String             @unique
   passwordHash     String
   role             Role
+  /// Per-user permission grants (see packages/shared/src/rbac.ts's PERMISSIONS list)
+  /// — this is what requirePermission actually enforces, independent of `role`.
+  /// `role` still drives site/event scoping (requireSiteAccess/requireEventAssignment)
+  /// and is used as a one-time convenience default when a new user is created, but is
+  /// no longer itself a permission ceiling. MASTER_ADMIN always bypasses regardless of
+  /// what's stored here (see hasUserPermission) — never grants itself real enforcement
+  /// weight, only a UI/reference value for that role.
+  permissions      String[]           @default([])
   isActive         Boolean            @default(true)
   createdAt        DateTime           @default(now())
   updatedAt        DateTime           @updatedAt

@@ -14,6 +14,7 @@
     "test:watch": "vitest",
     "seed": "tsx prisma/seed.ts",
     "bootstrap-admin": "tsx prisma/bootstrapAdmin.ts",
+    "backfill-user-permissions": "tsx scripts/backfillUserPermissions.ts",
     "cloud-cleanup": "tsx scripts/cloudCleanup.ts",
     "prisma:generate": "prisma generate",
     "prisma:push": "prisma db push"

@@ -1,6 +1,6 @@
 import request from 'supertest'
 import { describe, expect, it } from 'vitest'
-import { app, loginAsAgent, makeSite, makeUser } from '../helpers.js'
+import { app, loginAsAgent, makeSite, makeUser, validEventPayload } from '../helpers.js'
 
 describe('Admin authentication', () => {
   it('rejects an invalid password', async () => {
@@ -65,5 +65,38 @@ describe('RBAC + site scoping enforcement', () => {
     const client = await loginAsAgent(user.email, password)
     const res = await client.post('/api/admin/sites').send({ name: 'Admin Site', code: `ADM_${Date.now() % 1000000}` })
     expect(res.status).toBe(201)
+  })
+})
+
+describe('Per-user permission overrides (permissions now live on the user, not derived from role alone)', () => {
+  it('denies a PHOTOGRAPHER whose stored permissions have photo:upload explicitly removed, even though the role normally allows it, and even when assigned to the event', async () => {
+    const { ROLE_PERMISSIONS } = await import('@neoteric-memories/shared')
+    const restricted = ROLE_PERMISSIONS.PHOTOGRAPHER.filter((p) => p !== 'photo:upload')
+    const { user: photographer, password } = await makeUser('PHOTOGRAPHER', { permissions: [...restricted] })
+
+    const { user: admin, password: adminPassword } = await makeUser('MASTER_ADMIN')
+    const adminClient = await loginAsAgent(admin.email, adminPassword)
+    const site = await makeSite()
+    const eventRes = await adminClient.post('/api/admin/events').send(validEventPayload(site.id))
+    const eventId = eventRes.body.event.id as string
+    await adminClient.post(`/api/admin/events/${eventId}/assignments`).send({ userId: photographer.id, role: 'PHOTOGRAPHER' })
+
+    const photographerClient = await loginAsAgent(photographer.email, password)
+    const uploadRes = await photographerClient.post(`/api/admin/events/${eventId}/photos`).attach('photos', Buffer.from('not a real image'), 'photo.jpg')
+    expect(uploadRes.status).toBe(403)
+  })
+
+  it('grants a SUPPORT_EXECUTIVE the ability to manage sites once explicitly given site:manage, despite their role never including it by default', async () => {
+    const { user, password } = await makeUser('SUPPORT_EXECUTIVE', { permissions: ['site:manage', 'report:view'] })
+    const client = await loginAsAgent(user.email, password)
+    const res = await client.post('/api/admin/sites').send({ name: 'Override Site', code: `OVR_${Date.now() % 1000000}` })
+    expect(res.status).toBe(201)
+  })
+
+  it('denies that same SUPPORT_EXECUTIVE a permission not in their override list', async () => {
+    const { user, password } = await makeUser('SUPPORT_EXECUTIVE', { permissions: ['site:manage'] })
+    const client = await loginAsAgent(user.email, password)
+    const res = await client.get('/api/admin/users')
+    expect(res.status).toBe(403)
   })
 })

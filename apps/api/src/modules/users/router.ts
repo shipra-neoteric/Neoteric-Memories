@@ -12,8 +12,8 @@ import { writeAuditLog } from '../audit/service.js'
 export const usersRouter = Router()
 const idParams = z.object({ id: objectIdSchema })
 
-function toSafeUser(u: { id: string; name: string; email: string; role: string; isActive: boolean; createdAt: Date }) {
-  return { id: u.id, name: u.name, email: u.email, role: u.role, isActive: u.isActive, createdAt: u.createdAt }
+function toSafeUser(u: { id: string; name: string; email: string; role: string; permissions: string[]; isActive: boolean; createdAt: Date }) {
+  return { id: u.id, name: u.name, email: u.email, role: u.role, permissions: u.permissions, isActive: u.isActive, createdAt: u.createdAt }
 }
 
 usersRouter.get(
@@ -41,6 +41,7 @@ usersRouter.post(
         email: req.body.email.toLowerCase(),
         passwordHash,
         role: req.body.role,
+        permissions: req.body.permissions ?? [],
         isActive: req.body.isActive,
       },
     })

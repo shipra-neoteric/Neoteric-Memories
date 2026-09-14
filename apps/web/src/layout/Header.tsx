@@ -1,13 +1,15 @@
 import { useState } from 'react'
-import { Moon, Sun, LogOut, User } from 'lucide-react'
+import { Moon, Sun, LogOut, User, KeyRound } from 'lucide-react'
 import { useTheme } from '../context/ThemeContext'
 import { useAuth } from '../context/AuthContext'
 import { useNavigate } from 'react-router-dom'
+import { ChangePasswordDrawer } from '../components/ChangePasswordDrawer'
 
 export function Header() {
   const { theme, toggleTheme } = useTheme()
   const { user, logout } = useAuth()
   const [menuOpen, setMenuOpen] = useState(false)
+  const [changePasswordOpen, setChangePasswordOpen] = useState(false)
   const navigate = useNavigate()
 
   return (
@@ -40,6 +42,15 @@ export function Header() {
                 <p className="text-[10px] font-bold uppercase tracking-wide theme-text mt-1">{user?.role.replace('_', ' ')}</p>
               </div>
               <button
+                onClick={() => {
+                  setMenuOpen(false)
+                  setChangePasswordOpen(true)
+                }}
+                className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700"
+              >
+                <KeyRound className="w-4 h-4" /> Change password
+              </button>
+              <button
                 onClick={async () => {
                   await logout()
                   navigate('/login')
@@ -52,6 +63,16 @@ export function Header() {
           )}
         </div>
       </div>
+
+      <ChangePasswordDrawer
+        open={changePasswordOpen}
+        onClose={() => setChangePasswordOpen(false)}
+        onChanged={async () => {
+          setChangePasswordOpen(false)
+          await logout()
+          navigate('/login')
+        }}
+      />
     </header>
   )
 }

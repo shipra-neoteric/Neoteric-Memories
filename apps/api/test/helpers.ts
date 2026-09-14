@@ -2,7 +2,7 @@ import request from 'supertest'
 import { getPrisma } from '../src/db.js'
 import { hashPassword } from '../src/lib/password.js'
 import { createApp } from '../src/app.js'
-import type { Role } from '@neoteric-memories/shared'
+import { ROLE_PERMISSIONS, type Permission, type Role } from '@neoteric-memories/shared'
 
 export const app = createApp()
 
@@ -16,7 +16,10 @@ export async function makeSite(overrides: Partial<{ name: string; code: string }
   })
 }
 
-export async function makeUser(role: Role, overrides: Partial<{ email: string; password: string; isActive: boolean }> = {}) {
+export async function makeUser(
+  role: Role,
+  overrides: Partial<{ email: string; password: string; isActive: boolean; permissions: Permission[] }> = {}
+) {
   userCounter += 1
   const password = overrides.password ?? 'TestPassword123!'
   const passwordHash = await hashPassword(password)
@@ -26,6 +29,10 @@ export async function makeUser(role: Role, overrides: Partial<{ email: string; p
       email: overrides.email ?? `test-${role.toLowerCase()}-${userCounter}@example.test`,
       passwordHash,
       role,
+      // Defaults to the role's reference permission set so every existing test
+      // (written when permissions were role-derived) keeps behaving identically —
+      // pass `overrides.permissions` explicitly to test a custom/restricted grant.
+      permissions: overrides.permissions ?? [...ROLE_PERMISSIONS[role]],
       isActive: overrides.isActive ?? true,
     },
   })

@@ -10,7 +10,7 @@ import {
   Flag,
   Camera,
 } from 'lucide-react'
-import { hasPermission, type Permission } from '@neoteric-memories/shared'
+import { hasUserPermission, type Permission } from '@neoteric-memories/shared'
 import { useAuth } from '../context/AuthContext'
 
 interface NavItem {
@@ -34,7 +34,7 @@ const NAV_ITEMS: NavItem[] = [
 export function Sidebar() {
   const { user } = useAuth()
   if (!user) return null
-  const items = NAV_ITEMS.filter((item) => hasPermission(user.role, item.permission))
+  const items = NAV_ITEMS.filter((item) => hasUserPermission(user, item.permission))
 
   return (
     <aside className="hidden lg:flex lg:my-1 lg:ml-1 lg:rounded-xl lg:w-64 flex-col bg-white/90 dark:bg-gray-800/95 backdrop-blur-xl shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-gray-100 dark:border-gray-700">

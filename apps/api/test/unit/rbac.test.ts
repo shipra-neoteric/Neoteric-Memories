@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { hasPermission, ROLE_PERMISSIONS, ROLES } from '@neoteric-memories/shared'
+import { hasPermission, hasUserPermission, ROLE_PERMISSIONS, ROLES } from '@neoteric-memories/shared'
 
 describe('RBAC permission matrix', () => {
   it('gives MASTER_ADMIN every permission', () => {
@@ -27,5 +27,26 @@ describe('RBAC permission matrix', () => {
       expect(ROLE_PERMISSIONS[role]).toBeDefined()
       expect(Array.isArray(ROLE_PERMISSIONS[role])).toBe(true)
     }
+  })
+})
+
+describe('hasUserPermission (the live, per-user enforcement check)', () => {
+  it('MASTER_ADMIN bypasses regardless of what is actually stored on the user', () => {
+    expect(hasUserPermission({ role: 'MASTER_ADMIN', permissions: [] }, 'user:manage')).toBe(true)
+    expect(hasUserPermission({ role: 'MASTER_ADMIN', permissions: [] }, 'retention:manage')).toBe(true)
+  })
+
+  it('a non-MASTER_ADMIN role has no permissions at all unless explicitly granted, even ones their role normally allows', () => {
+    expect(hasUserPermission({ role: 'PHOTOGRAPHER', permissions: [] }, 'photo:upload')).toBe(false)
+  })
+
+  it('a role can be explicitly granted a permission outside its normal role-default ceiling', () => {
+    expect(hasUserPermission({ role: 'SUPPORT_EXECUTIVE', permissions: ['photo:view'] }, 'photo:view')).toBe(true)
+  })
+
+  it('a role can be explicitly denied a permission that its role-default set would normally include', () => {
+    const withoutUpload = ROLE_PERMISSIONS.PHOTOGRAPHER.filter((p) => p !== 'photo:upload')
+    expect(hasUserPermission({ role: 'PHOTOGRAPHER', permissions: [...withoutUpload] }, 'photo:upload')).toBe(false)
+    expect(hasUserPermission({ role: 'PHOTOGRAPHER', permissions: [...withoutUpload] }, 'photo:view')).toBe(true)
   })
 })

@@ -64,12 +64,29 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
   SUPPORT_EXECUTIVE: ['report:view', 'report:resolve', 'event:view'],
 }
 
+/** Reference-only now (used as a starting-point default when creating a user, and by rbac.test.ts) — not itself the live enforcement path, see hasUserPermission below. */
 export function hasPermission(role: Role, permission: Permission): boolean {
   return ROLE_PERMISSIONS[role].includes(permission)
 }
 
 export function hasAnyPermission(role: Role, permissions: Permission[]): boolean {
   return permissions.some((p) => hasPermission(role, p))
+}
+
+/**
+ * The live enforcement check: a user's actual permission ceiling is whatever is
+ * stored on their own User.permissions array, independent of their role label —
+ * `role` no longer implies a fixed permission set (see the schema comment on
+ * User.permissions). MASTER_ADMIN is the one exception, always bypassing
+ * regardless of what's stored, so this role can never be self-locked-out by an
+ * incomplete permissions array.
+ */
+export function hasUserPermission(user: { role: Role; permissions: Permission[] }, permission: Permission): boolean {
+  return user.role === 'MASTER_ADMIN' || user.permissions.includes(permission)
+}
+
+export function hasAnyUserPermission(user: { role: Role; permissions: Permission[] }, permissions: Permission[]): boolean {
+  return permissions.some((p) => hasUserPermission(user, p))
 }
 
 /** Roles that are inherently site/event-scoped (their access is further narrowed by assignment records, never global by default). */
