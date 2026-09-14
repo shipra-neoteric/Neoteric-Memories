@@ -4,6 +4,7 @@ import { getStorageProvider } from '../../providers/storage/index.js'
 import { getFaceSearchProvider } from '../../providers/faceSearch/index.js'
 import { enqueueJob } from '../../jobs/queue.js'
 import { sniffImageType, extensionForType } from '../../lib/fileValidation.js'
+import { convertHeicToJpeg } from '../../lib/heicConvert.js'
 import { hashFile } from '../../lib/hash.js'
 import { storageKeys } from '../../lib/storageKeys.js'
 import { logger } from '../../lib/logger.js'
@@ -65,12 +66,25 @@ export async function uploadPhotoBatch(
     // per-iteration, not held on to — this loop's peak memory is one file at a time,
     // not the whole batch, regardless of how many hundreds of files are in it.
     for (const file of files) {
-      const buffer = await readInputBuffer(file)
-      const type = sniffImageType(buffer)
+      let buffer = await readInputBuffer(file)
+      let type = sniffImageType(buffer)
       if (type === 'heic') {
-        outcome.rejected.push({ filename: file.originalFilename, reason: 'HEIC is not supported in this environment yet — please convert to JPEG or PNG before uploading.' })
-        await cleanupTempFile(file)
-        continue
+        // HEIC is the default photo format on iPhone — reject it outright would mean
+        // guests/admins can never use photos straight off an iPhone without manually
+        // converting first. sharp can't decode it (its prebuilt binary only ships the
+        // unlicensed AVIF/AV1 codec, not HEIC's licensed HEVC one), so convert it to a
+        // real JPEG up front via a pure-JS/WASM decoder instead, then treat it exactly
+        // like any other JPEG for the rest of the pipeline.
+        const converted = await convertHeicToJpeg(buffer)
+        if (!converted) {
+          outcome.rejected.push({ filename: file.originalFilename, reason: 'This HEIC file could not be converted — it may be corrupted or in an unsupported HEIC variant.' })
+          await cleanupTempFile(file)
+          continue
+        }
+        buffer = converted
+        type = 'jpeg'
+        if (file.filePath) await fs.writeFile(file.filePath, converted)
+        else file.buffer = converted
       }
       if (type === 'unknown') {
         outcome.rejected.push({ filename: file.originalFilename, reason: 'File is not a valid JPEG or PNG image (failed content validation).' })
