@@ -12,7 +12,17 @@ import { syncOneIntegration } from './service.js'
 export const driveRouter = Router({ mergeParams: true })
 const idParams = z.object({ id: objectIdSchema })
 
-function toSafeIntegration(i: { id: string; googleAccountEmail: string | null; folderId: string | null; folderName: string | null; status: string; lastSyncedAt: Date | null; lastError: string | null; importedCount: number }) {
+function toSafeIntegration(i: {
+  id: string
+  googleAccountEmail: string | null
+  folderId: string | null
+  folderName: string | null
+  status: string
+  lastSyncedAt: Date | null
+  lastError: string | null
+  lastSyncSummary: string | null
+  importedCount: number
+}) {
   return {
     id: i.id,
     googleAccountEmail: i.googleAccountEmail,
@@ -21,6 +31,7 @@ function toSafeIntegration(i: { id: string; googleAccountEmail: string | null; f
     status: i.status,
     lastSyncedAt: i.lastSyncedAt,
     lastError: i.lastError,
+    lastSyncSummary: i.lastSyncSummary,
     importedCount: i.importedCount,
   }
 }

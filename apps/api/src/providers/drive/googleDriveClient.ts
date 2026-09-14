@@ -93,9 +93,21 @@ export interface DriveImageFile {
   modifiedTime: string
 }
 
-/** Lists image files in a folder modified after `sinceIso` (or all images if unset), newest-safe pagination handled internally. */
+/**
+ * Lists image files in a folder modified after `sinceIso` (or all images if unset),
+ * newest-safe pagination handled internally.
+ *
+ * Deliberately broad on mimeType — `contains 'image/'` matches every image subtype
+ * Drive reports (jpeg, png, heic, heif, webp, gif, ...), not just an exact
+ * jpeg/png allowlist. A phone that uploads HEIC photos to Drive (the default on
+ * iPhone) would otherwise never even show up as a *candidate* file here, silently
+ * producing "0 imported" with no explanation. Letting every image type through as a
+ * candidate and relying on uploadPhotoBatch's own sniffImageType() to accept/reject
+ * (HEIC is explicitly rejected there with a clear, visible reason) is what actually
+ * surfaces the problem to the admin instead of hiding it.
+ */
 export async function listNewImagesInFolder(drive: drive_v3.Drive, folderId: string, sinceIso?: string): Promise<DriveImageFile[]> {
-  const clauses = [`'${folderId}' in parents`, 'trashed = false', "(mimeType = 'image/jpeg' or mimeType = 'image/png')"]
+  const clauses = [`'${folderId}' in parents`, 'trashed = false', "mimeType contains 'image/'"]
   if (sinceIso) clauses.push(`modifiedTime > '${sinceIso}'`)
 
   const files: DriveImageFile[] = []

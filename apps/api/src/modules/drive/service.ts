@@ -102,21 +102,22 @@ export async function syncOneIntegration(integration: {
   refreshTokenEnc: string
   lastSyncedAt: Date | null
   connectedById: string
-}): Promise<{ imported: number }> {
-  if (!integration.folderId) return { imported: 0 }
+}): Promise<{ imported: number; summary: string }> {
+  if (!integration.folderId) return { imported: 0, summary: 'This integration has no folder configured yet.' }
   const prisma = getPrisma()
   const drive = driveClientForRefreshTokenEnc(integration.refreshTokenEnc)
   const sinceIso = integration.lastSyncedAt?.toISOString()
   const newFiles = await listNewImagesInFolder(drive, integration.folderId, sinceIso)
 
   if (newFiles.length === 0) {
-    await prisma.driveIntegration.update({ where: { id: integration.id }, data: { lastSyncedAt: new Date(), lastError: null } })
-    return { imported: 0 }
+    const summary = 'No new files found in the Drive folder since the last sync.'
+    await prisma.driveIntegration.update({ where: { id: integration.id }, data: { lastSyncedAt: new Date(), lastError: null, lastSyncSummary: summary } })
+    return { imported: 0, summary }
   }
 
   let accepted = 0
   let duplicates = 0
-  let rejected = 0
+  const rejectedReasons = new Map<string, number>() // reason -> count, so a repeated cause (e.g. HEIC) collapses to one line instead of one per file
   const actor = { id: integration.connectedById, role: 'EVENT_MANAGER' }
 
   for (let i = 0; i < newFiles.length; i += DRIVE_SYNC_CHUNK_SIZE) {
@@ -131,15 +132,21 @@ export async function syncOneIntegration(integration: {
     const outcome = await uploadPhotoBatch(integration.eventId, downloaded, actor)
     accepted += outcome.accepted.length
     duplicates += outcome.duplicates.length
-    rejected += outcome.rejected.length
+    for (const r of outcome.rejected) rejectedReasons.set(r.reason, (rejectedReasons.get(r.reason) ?? 0) + 1)
   }
+
+  const rejectedTotal = [...rejectedReasons.values()].reduce((a, b) => a + b, 0)
+  const summaryParts = [`${newFiles.length} found`, `${accepted} imported`]
+  if (duplicates > 0) summaryParts.push(`${duplicates} already imported`)
+  if (rejectedTotal > 0) summaryParts.push(`${rejectedTotal} rejected (${[...rejectedReasons.keys()].join('; ')})`)
+  const summary = summaryParts.join(' · ')
 
   await prisma.driveIntegration.update({
     where: { id: integration.id },
-    data: { lastSyncedAt: new Date(), importedCount: { increment: accepted }, lastError: null },
+    data: { lastSyncedAt: new Date(), importedCount: { increment: accepted }, lastError: null, lastSyncSummary: summary },
   })
-  logger.info({ eventId: integration.eventId, accepted, duplicates, rejected }, 'Drive sync imported photos')
-  return { imported: accepted }
+  logger.info({ eventId: integration.eventId, accepted, duplicates, rejected: rejectedTotal }, 'Drive sync imported photos')
+  return { imported: accepted, summary }
 }
 
 export async function runDriveSyncSweep(): Promise<{ integrationsSynced: number; photosImported: number }> {

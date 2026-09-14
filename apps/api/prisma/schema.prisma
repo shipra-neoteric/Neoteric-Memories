@@ -497,6 +497,11 @@ model DriveIntegration {
   status          DriveIntegrationStatus @default(PENDING_FOLDER)
   lastSyncedAt    DateTime?
   lastError       String?
+  /// Human-readable outcome of the most recent sync attempt (e.g. "12 found · 0
+  /// imported · 12 unsupported format"), even when it "succeeded" with zero imports —
+  /// so an admin can tell "folder genuinely has nothing new" apart from "found files
+  /// but none of them were importable" without needing to check server logs.
+  lastSyncSummary String?
   importedCount   Int                    @default(0)
   createdAt       DateTime               @default(now())
   updatedAt       DateTime               @updatedAt

@@ -506,6 +506,7 @@ interface DriveIntegration {
   status: 'PENDING_FOLDER' | 'ACTIVE' | 'PAUSED' | 'ERROR'
   lastSyncedAt: string | null
   lastError: string | null
+  lastSyncSummary: string | null
   importedCount: number
 }
 
@@ -540,9 +541,10 @@ function DriveIntegrationCard({ eventId }: { eventId: string }) {
   })
 
   const syncNow = useMutation({
-    mutationFn: () => apiFetch<{ imported: number }>(`/api/admin/events/${eventId}/drive/sync-now`, { method: 'POST' }),
+    mutationFn: () => apiFetch<{ imported: number; summary: string }>(`/api/admin/events/${eventId}/drive/sync-now`, { method: 'POST' }),
     onSuccess: (res) => {
-      toastSuccess(res.imported > 0 ? `Imported ${res.imported} new photo(s) from Drive` : 'No new photos in the Drive folder')
+      if (res.imported > 0) toastSuccess(`Imported ${res.imported} new photo(s) from Drive`)
+      else toastError(res.summary) // "0 imported" always shows WHY now — nothing new, or found files that couldn't be used and the reason (e.g. unsupported format).
       invalidate()
       queryClient.invalidateQueries({ queryKey: ['event-photos', eventId] })
     },
@@ -620,6 +622,9 @@ function DriveIntegrationCard({ eventId }: { eventId: string }) {
                 </p>
                 {integration.status === 'ERROR' && integration.lastError && (
                   <p className="text-[11px] text-red-500 mt-1">{integration.lastError}</p>
+                )}
+                {integration.status !== 'ERROR' && integration.lastSyncSummary && (
+                  <p className="text-[11px] text-gray-400 mt-1">{integration.lastSyncSummary}</p>
                 )}
               </div>
               <div className="flex flex-wrap gap-2">
