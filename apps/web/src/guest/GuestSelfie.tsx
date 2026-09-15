@@ -233,7 +233,7 @@ export function GuestSelfie() {
               ref={fileInputRef}
               data-testid="selfie-upload-input"
               type="file"
-              accept="image/jpeg,image/png"
+              accept="image/jpeg,image/png,image/heic,image/heif,.heic,.heif"
               hidden
               onChange={(e) => {
                 const file = e.target.files?.[0]

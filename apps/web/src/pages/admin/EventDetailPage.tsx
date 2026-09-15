@@ -326,7 +326,7 @@ export function EventDetailPage() {
               <input
                 ref={fileInputRef}
                 type="file"
-                accept="image/jpeg,image/png"
+                accept="image/jpeg,image/png,image/heic,image/heif,.heic,.heif"
                 multiple
                 hidden
                 onChange={(e) => {

@@ -5,6 +5,7 @@ import { getStorageProvider } from '../../providers/storage/index.js'
 import { getFaceSearchProvider } from '../../providers/faceSearch/index.js'
 import { getLivenessProvider } from '../../providers/liveness/index.js'
 import { sniffImageType } from '../../lib/fileValidation.js'
+import { convertHeicToJpeg } from '../../lib/heicConvert.js'
 import { hashSelfieBuffer } from '../../lib/hash.js'
 import { normalizeForFaceProvider } from '../../lib/imageResize.js'
 import { storageKeys } from '../../lib/storageKeys.js'
@@ -46,15 +47,28 @@ export async function performSelfieSearch(
 ): Promise<SelfieSearchResult> {
   const prisma = getPrisma()
   const imageType = sniffImageType(rawSelfieBuffer)
-  if (imageType === 'unknown' || imageType === 'heic') {
+  if (imageType === 'unknown') {
     throw new SelfieRejectedError('INVALID_IMAGE', 'That does not look like a valid photo. Please try capturing your selfie again.')
+  }
+
+  // HEIC is the default photo format on iPhone — a guest using "Upload a selfie
+  // instead" with an existing photo from their gallery would routinely hit this.
+  // Convert to JPEG the same way uploaded event photos already are (see
+  // photos/service.ts) rather than rejecting outright.
+  let normalizedSelfieBuffer = rawSelfieBuffer
+  if (imageType === 'heic') {
+    const converted = await convertHeicToJpeg(rawSelfieBuffer)
+    if (!converted) {
+      throw new SelfieRejectedError('INVALID_IMAGE', 'This HEIC photo could not be converted — it may be corrupted. Please try a different photo.')
+    }
+    normalizedSelfieBuffer = converted
   }
 
   // Cloud face providers (Rekognition) cap inline image bytes at 5MB — a real phone
   // photo routinely exceeds that. Normalize once, up front, and use this buffer for
   // every downstream step (detection, storage, search) — bounding boxes returned by
   // the provider are fractional, so this never affects accuracy.
-  const selfieBuffer = await normalizeForFaceProvider(rawSelfieBuffer)
+  const selfieBuffer = await normalizeForFaceProvider(normalizedSelfieBuffer)
 
   const livenessResult = await getLivenessProvider().checkLiveness(selfieBuffer)
   // L1 mock liveness always passes; a real provider's `isLive: false` would be handled the same way a rejected capture is handled below, once implemented.
