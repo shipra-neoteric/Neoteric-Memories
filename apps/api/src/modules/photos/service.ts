@@ -49,26 +49,94 @@ export interface UploadOutcome {
   rejected: { filename: string; reason: string }[]
 }
 
-export async function uploadPhotoBatch(
-  eventId: string,
-  files: UploadFileInput[],
-  actor: { id: string; role: string }
-): Promise<UploadOutcome> {
-  const prisma = getPrisma()
-  const event = await prisma.event.findUnique({ where: { id: eventId } })
-  if (!event || event.deletedAt) throw new Error('Event not found')
+export interface ClassifiedFile {
+  file: UploadFileInput
+  type: 'jpeg' | 'png' | 'heic'
+  hash: string
+}
 
-  const outcome: UploadOutcome = { accepted: [], duplicates: [], rejected: [] }
-  const acceptedFiles: { file: UploadFileInput; type: 'jpeg' | 'png'; hash: string }[] = []
+export interface ClassifyOutcome {
+  accepted: ClassifiedFile[]
+  duplicates: { filename: string }[]
+  rejected: { filename: string; reason: string }[]
+}
+
+/**
+ * The cheap half of an upload: sniff each file's real type from its bytes and check
+ * it against the event's existing photos for a duplicate. No HEIC decoding, no S3
+ * writes — just a disk read + a hash per file, so this stays fast (a few seconds at
+ * most) even for a few hundred files, and is safe to run synchronously inside an
+ * HTTP request. The expensive part (HEIC conversion, storage upload) is
+ * `processAcceptedFiles`, deliberately kept separate so callers with a request
+ * timeout to respect (the manual upload route) can respond as soon as this
+ * classification is done and hand the accepted files off to run in the background.
+ */
+export async function classifyUploadBatch(eventId: string, files: UploadFileInput[]): Promise<ClassifyOutcome> {
+  const prisma = getPrisma()
+  const outcome: ClassifyOutcome = { accepted: [], duplicates: [], rejected: [] }
+
+  // Deliberately sequential (not Promise.all) and each file's buffer is read fresh
+  // per-iteration, not held on to — this loop's peak memory is one file at a time,
+  // not the whole batch, regardless of how many hundreds of files are in it.
+  for (const file of files) {
+    const buffer = await readInputBuffer(file)
+    const type = sniffImageType(buffer)
+    if (type === 'unknown') {
+      outcome.rejected.push({ filename: file.originalFilename, reason: 'File is not a valid JPEG, PNG, or HEIC image (failed content validation).' })
+      await cleanupTempFile(file)
+      continue
+    }
+    // Hashed on the original bytes (even for HEIC, ahead of any conversion) — a
+    // stable identity for "is this the exact same source file", independent of
+    // whatever a WASM decoder's output happens to be on a given run.
+    const hash = hashFile(buffer)
+    const existing = await prisma.photo.findUnique({ where: { eventId_fileHash: { eventId, fileHash: hash } } })
+    if (existing) {
+      outcome.duplicates.push({ filename: file.originalFilename })
+      await cleanupTempFile(file)
+      continue
+    }
+    outcome.accepted.push({ file, type, hash })
+  }
+
+  return outcome
+}
+
+/**
+ * The slow half of an upload: HEIC->JPEG conversion (a worker-thread round-trip per
+ * file, see lib/heicConvert.ts) and the storage upload itself. For a batch with
+ * several HEIC files this can easily run past any reasonable HTTP timeout, so the
+ * manual upload route fires this off in the background instead of awaiting it — the
+ * already-existing periodic photos-list refetch on the event page is what surfaces
+ * the results as they land.
+ */
+export async function processAcceptedFiles(
+  eventId: string,
+  accepted: ClassifiedFile[],
+  actor: { id: string; role: string }
+): Promise<{ accepted: { photoId: string; filename: string }[]; failed: { filename: string; reason: string }[] }> {
+  const result: { accepted: { photoId: string; filename: string }[]; failed: { filename: string; reason: string }[] } = {
+    accepted: [],
+    failed: [],
+  }
+  if (accepted.length === 0) return result
+
+  const prisma = getPrisma()
 
   try {
-    // Deliberately sequential (not Promise.all) and each file's buffer is read fresh
-    // per-iteration, not held on to — this loop's peak memory is one file at a time,
-    // not the whole batch, regardless of how many hundreds of files are in it.
-    for (const file of files) {
+    const event = await prisma.event.findUnique({ where: { id: eventId } })
+    if (!event || event.deletedAt) throw new Error('Event not found')
+
+    const batch = await prisma.photoBatch.create({
+      data: { eventId, uploadedById: actor.id, status: 'PROCESSING', totalCount: accepted.length },
+    })
+
+    const storage = getStorageProvider()
+    for (const { file, type: sniffedType, hash } of accepted) {
       let buffer = await readInputBuffer(file)
-      let type = sniffImageType(buffer)
-      if (type === 'heic') {
+      let type: 'jpeg' | 'png' = sniffedType === 'png' ? 'png' : 'jpeg'
+
+      if (sniffedType === 'heic') {
         // HEIC is the default photo format on iPhone — reject it outright would mean
         // guests/admins can never use photos straight off an iPhone without manually
         // converting first. sharp can't decode it (its prebuilt binary only ships the
@@ -77,39 +145,14 @@ export async function uploadPhotoBatch(
         // like any other JPEG for the rest of the pipeline.
         const converted = await convertHeicToJpeg(buffer)
         if (!converted) {
-          outcome.rejected.push({ filename: file.originalFilename, reason: 'This HEIC file could not be converted — it may be corrupted or in an unsupported HEIC variant.' })
+          result.failed.push({ filename: file.originalFilename, reason: 'This HEIC file could not be converted — it may be corrupted or in an unsupported HEIC variant.' })
           await cleanupTempFile(file)
           continue
         }
         buffer = converted
         type = 'jpeg'
-        if (file.filePath) await fs.writeFile(file.filePath, converted)
-        else file.buffer = converted
       }
-      if (type === 'unknown') {
-        outcome.rejected.push({ filename: file.originalFilename, reason: 'File is not a valid JPEG or PNG image (failed content validation).' })
-        await cleanupTempFile(file)
-        continue
-      }
-      const hash = hashFile(buffer)
-      const existing = await prisma.photo.findUnique({ where: { eventId_fileHash: { eventId, fileHash: hash } } })
-      if (existing) {
-        outcome.duplicates.push({ filename: file.originalFilename })
-        await cleanupTempFile(file)
-        continue
-      }
-      acceptedFiles.push({ file, type, hash })
-    }
 
-    if (acceptedFiles.length === 0) return outcome
-
-    const batch = await prisma.photoBatch.create({
-      data: { eventId, uploadedById: actor.id, status: 'PROCESSING', totalCount: acceptedFiles.length },
-    })
-
-    const storage = getStorageProvider()
-    for (const { file, type, hash } of acceptedFiles) {
-      const buffer = await readInputBuffer(file)
       const photo = await prisma.photo.create({
         data: {
           eventId,
@@ -136,12 +179,17 @@ export async function uploadPhotoBatch(
       await cleanupTempFile(file)
 
       await enqueueJob('PHOTO_PROCESS', { photoId: photo.id }, `photo-process:${photo.id}`)
-      outcome.accepted.push({ photoId: photo.id, filename: file.originalFilename })
+      result.accepted.push({ photoId: photo.id, filename: file.originalFilename })
     }
 
-    if (event.status === 'DRAFT') {
+    if (event.status === 'DRAFT' && result.accepted.length > 0) {
       await prisma.event.update({ where: { id: eventId }, data: { status: 'UPLOADING' } })
     }
+
+    await prisma.photoBatch.update({
+      where: { id: batch.id },
+      data: { status: 'COMPLETED', processedCount: result.accepted.length, failedCount: result.failed.length, completedAt: new Date() },
+    })
 
     await writeAuditLog({
       actorId: actor.id,
@@ -150,15 +198,31 @@ export async function uploadPhotoBatch(
       entityType: 'PhotoBatch',
       entityId: batch.id,
       eventId,
-      metadata: { accepted: outcome.accepted.length, duplicates: outcome.duplicates.length, rejected: outcome.rejected.length },
+      metadata: { accepted: result.accepted.length, failed: result.failed.length },
     })
 
-    return outcome
+    return result
   } finally {
     // Belt-and-suspenders: clean up any temp file that wasn't already removed above
     // (e.g. the function threw partway through processing an accepted file).
-    await Promise.all(files.map((f) => cleanupTempFile(f)))
+    await Promise.all(accepted.map((a) => cleanupTempFile(a.file)))
   }
+}
+
+/**
+ * Convenience wrapper composing classify + process synchronously, for callers that
+ * are already running in a background context of their own and want one immediate
+ * result (Drive sync, dev-seed data) — not used by the HTTP upload route, which
+ * needs the two halves split so it can respond before the slow half finishes.
+ */
+export async function uploadPhotoBatch(
+  eventId: string,
+  files: UploadFileInput[],
+  actor: { id: string; role: string }
+): Promise<UploadOutcome> {
+  const classified = await classifyUploadBatch(eventId, files)
+  const { accepted, failed } = await processAcceptedFiles(eventId, classified.accepted, actor)
+  return { accepted, duplicates: classified.duplicates, rejected: [...classified.rejected, ...failed] }
 }
 
 export async function retryPhotoProcessing(photoId: string, actor: { id: string; role: string }): Promise<void> {

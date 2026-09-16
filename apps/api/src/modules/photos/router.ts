@@ -10,6 +10,7 @@ import { requirePermission, requireEventAssignment } from '../../middleware/rbac
 import { getPrisma } from '../../db.js'
 import { Errors } from '../../lib/errors.js'
 import { getStorageProvider } from '../../providers/storage/index.js'
+import { logger } from '../../lib/logger.js'
 import * as photoService from './service.js'
 
 export const photosRouter = Router({ mergeParams: true })
@@ -45,12 +46,31 @@ photosRouter.post(
     const files = (req.files as Express.Multer.File[] | undefined) ?? []
     if (files.length === 0) throw Errors.badRequest('No files were uploaded')
 
-    const outcome = await photoService.uploadPhotoBatch(
-      req.params.id,
-      files.map((f) => ({ filePath: f.path, originalFilename: f.originalname, declaredMimeType: f.mimetype })),
-      req.user!
-    )
-    res.status(201).json(outcome)
+    const eventId = req.params.id
+    const inputs = files.map((f) => ({ filePath: f.path, originalFilename: f.originalname, declaredMimeType: f.mimetype }))
+
+    // Classification (type sniffing + dedupe check) is a quick disk-read-and-hash
+    // pass, so it's fine to await here and give the client an immediate, specific
+    // breakdown of what was rejected/duplicate. The expensive part — HEIC conversion
+    // (a worker-thread round-trip per file) and the storage upload — is handed off to
+    // run in the background instead of being awaited: for a batch with several HEIC
+    // files that easily exceeds a reasonable HTTP timeout, which is exactly what was
+    // causing "Upload failed" (a dead connection, not a clean rejection) on real
+    // uploads. The event page's photos list already polls on an interval and picks up
+    // the results as they land.
+    const classified = await photoService.classifyUploadBatch(eventId, inputs)
+
+    if (classified.accepted.length > 0) {
+      void photoService.processAcceptedFiles(eventId, classified.accepted, req.user!).catch((err) => {
+        logger.error({ eventId }, `Background photo processing failed: ${err instanceof Error ? err.message : String(err)}`)
+      })
+    }
+
+    res.status(202).json({
+      queued: classified.accepted.length,
+      duplicates: classified.duplicates,
+      rejected: classified.rejected,
+    })
   })
 )
 
