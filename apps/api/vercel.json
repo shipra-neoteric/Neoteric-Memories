@@ -1,0 +1,10 @@
+{
+  "installCommand": "npm install --include=dev",
+  "buildCommand": "npm run build -w @neoteric-memories/shared && npm run build -w @neoteric-memories/api",
+  "rewrites": [{ "source": "/(.*)", "destination": "/api" }],
+  "functions": {
+    "api/index.js": {
+      "includeFiles": "dist/lib/heicConvertWorker.js"
+    }
+  }
+}
