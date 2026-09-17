@@ -193,6 +193,19 @@ photosRouter.patch(
   })
 )
 
+// Irreversible, same as the per-photo delete below — removes face-index data and
+// storage objects for every photo in the event, not just marks them archived.
+photosRouter.delete(
+  '/',
+  requirePermission('photo:delete'),
+  validateParams(idParams),
+  requireEventAssignment((req) => req.params.id),
+  asyncHandler(async (req, res) => {
+    const result = await photoService.deleteAllPhotosForEvent(req.params.id, req.user!)
+    res.json({ success: true, deleted: result.deleted })
+  })
+)
+
 photosRouter.delete(
   '/:photoId',
   requirePermission('photo:delete'),

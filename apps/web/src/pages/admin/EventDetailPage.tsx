@@ -297,6 +297,15 @@ export function EventDetailPage() {
     },
   })
 
+  const deleteAllPhotos = useMutation({
+    mutationFn: () => apiFetch<{ deleted: number }>(`/api/admin/events/${eventId}/photos`, { method: 'DELETE' }),
+    onSuccess: (res) => {
+      toastSuccess(`${res.deleted} photo(s) deleted`)
+      invalidate()
+    },
+    onError: (err) => toastError(err instanceof ApiError ? err.message : 'Could not delete all photos'),
+  })
+
   const assignMember = useMutation({
     mutationFn: (body: { userId: string; role: 'EVENT_MANAGER' | 'PHOTOGRAPHER' }) =>
       apiFetch(`/api/admin/events/${eventId}/assignments`, { method: 'POST', body }),
@@ -427,9 +436,30 @@ export function EventDetailPage() {
           <Card className="p-5">
             <div className="flex items-center justify-between mb-3">
               <SectionTitle icon={Upload}>Photographs ({totalPhotos})</SectionTitle>
-              <Button variant="primary" icon={<Upload className="w-4 h-4" />} onClick={() => fileInputRef.current?.click()} loading={uploadPhotos.isPending}>
-                Upload photos
-              </Button>
+              <div className="flex gap-2">
+                {totalPhotos > 0 && (
+                  <Button
+                    variant="ghost"
+                    className="text-red-500"
+                    icon={<Trash2 className="w-4 h-4" />}
+                    loading={deleteAllPhotos.isPending}
+                    onClick={async () => {
+                      const { isConfirmed } = await confirmDialog({
+                        title: `Delete all ${totalPhotos} photos?`,
+                        text: 'This removes every photo in this event, including their face-search index data. This cannot be undone.',
+                        danger: true,
+                        confirmButtonText: 'Delete all',
+                      })
+                      if (isConfirmed) deleteAllPhotos.mutate()
+                    }}
+                  >
+                    Delete all
+                  </Button>
+                )}
+                <Button variant="primary" icon={<Upload className="w-4 h-4" />} onClick={() => fileInputRef.current?.click()} loading={uploadPhotos.isPending}>
+                  Upload photos
+                </Button>
+              </div>
               <input
                 ref={fileInputRef}
                 type="file"

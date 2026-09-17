@@ -369,3 +369,23 @@ export async function deletePhoto(photoId: string, actor: { id: string; role: st
   await prisma.photo.update({ where: { id: photoId }, data: { status: 'DELETED', deletedAt: new Date() } })
   await writeAuditLog({ actorId: actor.id, actorRole: actor.role, action: 'photo.delete', entityType: 'Photo', entityId: photoId, eventId: photo.eventId })
 }
+
+// Bounds how many photos' delete (face-provider removal + storage delete + DB update)
+// happen concurrently — same reasoning as UPLOAD_CONCURRENCY above: keeps this safely
+// under a serverless request's execution limit regardless of how many photos an
+// event has, without needing to background it.
+const DELETE_CONCURRENCY = 8
+
+/** Deletes every non-deleted photo in an event (each via deletePhoto, so face-index cleanup and storage removal happen the same way as a single delete) — irreversible, same as deletePhoto itself. */
+export async function deleteAllPhotosForEvent(eventId: string, actor: { id: string; role: string }): Promise<{ deleted: number }> {
+  const prisma = getPrisma()
+  const photos = await prisma.photo.findMany({ where: { eventId, deletedAt: null }, select: { id: true } })
+
+  for (let i = 0; i < photos.length; i += DELETE_CONCURRENCY) {
+    const chunk = photos.slice(i, i + DELETE_CONCURRENCY)
+    await Promise.all(chunk.map((p) => deletePhoto(p.id, actor)))
+  }
+
+  await writeAuditLog({ actorId: actor.id, actorRole: actor.role, action: 'photo.delete_all', entityType: 'Event', entityId: eventId, eventId, metadata: { count: photos.length } })
+  return { deleted: photos.length }
+}

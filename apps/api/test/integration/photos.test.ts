@@ -123,3 +123,30 @@ describe('Photo upload + processing', () => {
     expect(job).toBeTruthy()
   })
 })
+
+describe('DELETE /api/admin/events/:id/photos (bulk delete)', () => {
+  it('deletes every photo in the event, including their indexed faces, and leaves the event photo-free', async () => {
+    const { client, eventId } = await createLiveableEvent()
+    const bufferA = await renderSyntheticPhoto([{ personId: 'person-1', x: 200, y: 100, size: 200 }], 'a')
+    const bufferB = await renderSyntheticPhoto([{ personId: 'person-2', x: 150, y: 120, size: 180 }], 'b')
+    const resA = await client.post(`/api/admin/events/${eventId}/photos`).attach('photos', bufferA, 'a.jpg')
+    const resB = await client.post(`/api/admin/events/${eventId}/photos`).attach('photos', bufferB, 'b.jpg')
+    const photoIdA = resA.body.accepted[0].photoId as string
+    const photoIdB = resB.body.accepted[0].photoId as string
+    await processPhotoProcess({ photoId: photoIdA })
+    await processPhotoProcess({ photoId: photoIdB })
+    expect(await getPrisma().indexedFace.count({ where: { eventId } })).toBe(2)
+
+    const del = await client.delete(`/api/admin/events/${eventId}/photos`)
+    expect(del.status).toBe(200)
+    expect(del.body.deleted).toBe(2)
+
+    expect(await getPrisma().indexedFace.count({ where: { eventId } })).toBe(0)
+    const list = await client.get(`/api/admin/events/${eventId}/photos`)
+    expect(list.body.photos).toHaveLength(0)
+
+    // Idempotent — nothing left to delete on a repeat call, not an error.
+    const del2 = await client.delete(`/api/admin/events/${eventId}/photos`)
+    expect(del2.body.deleted).toBe(0)
+  })
+})
