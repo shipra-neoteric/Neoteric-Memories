@@ -84,4 +84,12 @@ export class S3StorageProvider implements StorageProvider {
     })
     return getSignedUrl(this.client, command, { expiresIn: ttlSeconds })
   }
+
+  async getSignedUploadUrl(key: string, ttlSeconds: number, contentType: string): Promise<{ url: string; headers: Record<string, string> }> {
+    const command = new PutObjectCommand({ Bucket: this.bucket, Key: key, ContentType: contentType })
+    const url = await getSignedUrl(this.client, command, { expiresIn: ttlSeconds })
+    // The signature covers Content-Type, so the client's actual PUT must send exactly
+    // this header or S3 will reject it with a signature mismatch.
+    return { url, headers: { 'Content-Type': contentType } }
+  }
 }

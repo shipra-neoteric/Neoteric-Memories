@@ -59,6 +59,18 @@ export class LocalStorageProvider implements StorageProvider {
     if (opts?.downloadFilename) params.set('dl', opts.downloadFilename)
     return `${env.API_BASE_URL}/files/${encodeURIComponent(key)}?${params.toString()}`
   }
+
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  async getSignedUploadUrl(key: string, ttlSeconds: number, contentType: string): Promise<{ url: string; headers: Record<string, string> }> {
+    // contentType isn't signed here (unlike S3's) — this dev/demo provider has no
+    // equivalent of S3's request-signature-includes-headers mechanism, so the upload
+    // route (see modules/files/router.ts) just trusts whatever Content-Type the
+    // client's PUT actually sends. Fine for local/demo use; production uses S3.
+    const exp = Date.now() + ttlSeconds * 1000
+    const sig = signKey(key, exp)
+    const params = new URLSearchParams({ exp: String(exp), sig })
+    return { url: `${env.API_BASE_URL}/files/upload/${encodeURIComponent(key)}?${params.toString()}`, headers: {} }
+  }
 }
 
 export function signKey(key: string, exp: number): string {

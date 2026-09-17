@@ -161,22 +161,50 @@ export function EventDetailPage() {
     // picker can be reused, and FileList is a *live* view of the input's current
     // state, so a FileList reference would already be empty by the time this async
     // function runs if we didn't copy it out first.
+    //
+    // Uploads go straight from this browser to storage via a presigned URL per file,
+    // never through this app's own API request body — Vercel hard-rejects any
+    // request over ~4.5MB regardless of backend code, which a single real phone
+    // photo can already exceed on its own. presign/finalize are both tiny JSON
+    // requests; only the PUT in between carries the actual file bytes, and it goes
+    // directly to storage.
     mutationFn: async (files: File[]) => {
-      const form = new FormData()
-      files.forEach((f) => form.append('photos', f))
-      // HEIC files are uploaded as-is here and converted by a background job (see
-      // photos/service.ts's processAcceptedFiles) rather than inline, so this request
-      // itself stays fast regardless of file format — the photos list below polls on
-      // an interval and shows each photo's real status as it's processed.
-      return apiFetch<{ accepted: unknown[]; duplicates: unknown[]; rejected: { filename: string; reason: string }[] }>(
-        `/api/admin/events/${eventId}/photos`,
-        { method: 'POST', body: form }
+      const presigned = await apiFetch<{
+        files: { filename: string; photoId: string; key: string; uploadUrl: string; headers: Record<string, string> }[]
+      }>(`/api/admin/events/${eventId}/photos/presign`, {
+        method: 'POST',
+        body: { files: files.map((f) => ({ filename: f.name, contentType: f.type || 'application/octet-stream' })) },
+      })
+
+      const uploaded: { key: string; photoId: string; filename: string }[] = []
+      let uploadFailures = 0
+      await Promise.all(
+        presigned.files.map(async (p, i) => {
+          try {
+            const res = await fetch(p.uploadUrl, { method: 'PUT', headers: p.headers, body: files[i] })
+            if (!res.ok) throw new Error(`upload failed with status ${res.status}`)
+            uploaded.push({ key: p.key, photoId: p.photoId, filename: p.filename })
+          } catch {
+            uploadFailures += 1
+          }
+        })
       )
+
+      if (uploaded.length === 0) {
+        throw new ApiError(0, 'UPLOAD_FAILED', 'None of the selected files could be uploaded. Check your connection and try again.')
+      }
+
+      const result = await apiFetch<{ accepted: unknown[]; duplicates: unknown[]; rejected: { filename: string; reason: string }[] }>(
+        `/api/admin/events/${eventId}/photos/finalize`,
+        { method: 'POST', body: { files: uploaded } }
+      )
+      return { ...result, uploadFailures }
     },
     onSuccess: (res) => {
       if (res.accepted.length) toastSuccess(`${res.accepted.length} photo(s) uploaded and queued for processing`)
       if (res.duplicates.length) toastError(`${res.duplicates.length} file(s) skipped as duplicates`)
       if (res.rejected.length) toastError(`${res.rejected.length} file(s) rejected: ${res.rejected[0].reason}`)
+      if (res.uploadFailures > 0) toastError(`${res.uploadFailures} file(s) failed to upload — try again`)
       invalidate()
     },
     onError: (err) => toastError(err instanceof ApiError ? err.message : 'Upload failed'),

@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises'
+import crypto from 'node:crypto'
 import { getPrisma } from '../../db.js'
 import { getStorageProvider } from '../../providers/storage/index.js'
 import { getFaceSearchProvider } from '../../providers/faceSearch/index.js'
@@ -14,19 +15,27 @@ export interface UploadFileInput {
   declaredMimeType: string
   // Exactly one of these is set. `buffer` for callers that already have the bytes in
   // memory in a bounded way (e.g. one Drive download at a time — see
-  // modules/drive/service.ts). `filePath` for the HTTP multipart upload route, whose
-  // multer config streams straight to a temp file on disk instead of buffering every
-  // file in a large batch in RAM simultaneously (which is what let a big-enough batch
-  // exhaust the process's memory and get killed partway through, silently leaving
-  // only however many files had already been written to the DB by that point).
+  // modules/drive/service.ts). `filePath` for a local multipart upload's temp file on
+  // disk. `storageKey` for a file the client already uploaded directly to storage via
+  // a presigned URL (see presignUploads below + modules/photos/router.ts's
+  // presign/finalize routes) — used instead of a request body containing the file's
+  // bytes at all, since Vercel hard-rejects any request over ~4.5MB regardless of our
+  // own code, which real phone photos routinely exceed.
   buffer?: Buffer
   filePath?: string
+  storageKey?: string
+  // Only meaningful alongside storageKey — the id presignUploads already baked into
+  // that storage key (see storageKeys.original), so the Photo row created for it uses
+  // the SAME id instead of a fresh auto-generated one, keeping the row and the object
+  // that's already sitting in storage pointed at each other.
+  photoId?: string
 }
 
 async function readInputBuffer(input: UploadFileInput): Promise<Buffer> {
   if (input.buffer) return input.buffer
   if (input.filePath) return fs.readFile(input.filePath)
-  throw new Error('UploadFileInput must have either buffer or filePath set')
+  if (input.storageKey) return getStorageProvider().getObject(input.storageKey)
+  throw new Error('UploadFileInput must have exactly one of buffer, filePath, or storageKey set')
 }
 
 async function cleanupTempFile(input: UploadFileInput): Promise<void> {
@@ -40,6 +49,22 @@ async function cleanupTempFile(input: UploadFileInput): Promise<void> {
     if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return
     logger.warn({ filePath: input.filePath }, `Failed to remove temp upload file: ${err instanceof Error ? err.message : String(err)}`)
   }
+}
+
+/** Deletes an already-uploaded storage object for a file that turned out to be rejected/duplicate — a presigned upload always writes the object first (see presignUploads), so a file classify() doesn't accept would otherwise be orphaned in storage forever. */
+async function cleanupOrphanedStorageObject(input: UploadFileInput): Promise<void> {
+  if (!input.storageKey) return
+  try {
+    await getStorageProvider().deleteObject(input.storageKey)
+  } catch (err) {
+    logger.warn({ storageKey: input.storageKey }, `Failed to clean up orphaned storage object: ${err instanceof Error ? err.message : String(err)}`)
+  }
+}
+
+/** A safe, lowercase extension guess from a filename — 'bin' if there isn't one worth trusting. Cosmetic only: the actual stored mimeType always comes from sniffing the real uploaded bytes (see classifyUploadBatch), never from this. */
+function extensionFromFilename(filename: string): string {
+  const match = /\.([a-zA-Z0-9]{1,8})$/.exec(filename)
+  return match ? match[1].toLowerCase() : 'bin'
 }
 
 export interface UploadOutcome {
@@ -62,28 +87,27 @@ export interface ClassifyOutcome {
 
 /**
  * The cheap half of an upload: sniff each file's real type from its bytes and check
- * it against the event's existing photos for a duplicate. No HEIC decoding, no S3
- * writes — just a disk read + a hash per file, so this stays fast (a few seconds at
- * most) even for a few hundred files, and is safe to run synchronously inside an
- * HTTP request. The expensive part (HEIC conversion, storage upload) is
- * `processAcceptedFiles`, deliberately kept separate so callers with a request
- * timeout to respect (the manual upload route) can respond as soon as this
- * classification is done and hand the accepted files off to run in the background.
+ * it against the event's existing photos for a duplicate. No HEIC decoding — just a
+ * read + a hash per file, so this stays fast even for a few hundred files, and is
+ * safe to run synchronously inside an HTTP request. Reads happen in small concurrent
+ * chunks (UPLOAD_CONCURRENCY, defined below) rather than one at a time — for
+ * storageKey-based files (the presigned-upload flow) each read is a network round
+ * trip to storage, not a local disk read, so doing them sequentially would make this
+ * scale badly with batch size the same way the old per-file-sequential storage
+ * writes did (see processAcceptedFiles's own history).
  */
 export async function classifyUploadBatch(eventId: string, files: UploadFileInput[]): Promise<ClassifyOutcome> {
   const prisma = getPrisma()
   const outcome: ClassifyOutcome = { accepted: [], duplicates: [], rejected: [] }
 
-  // Deliberately sequential (not Promise.all) and each file's buffer is read fresh
-  // per-iteration, not held on to — this loop's peak memory is one file at a time,
-  // not the whole batch, regardless of how many hundreds of files are in it.
-  for (const file of files) {
+  const classifyOne = async (file: UploadFileInput): Promise<void> => {
     const buffer = await readInputBuffer(file)
     const type = sniffImageType(buffer)
     if (type === 'unknown') {
       outcome.rejected.push({ filename: file.originalFilename, reason: 'File is not a valid JPEG, PNG, or HEIC image (failed content validation).' })
       await cleanupTempFile(file)
-      continue
+      await cleanupOrphanedStorageObject(file)
+      return
     }
     // Hashed on the original bytes (even for HEIC, ahead of any conversion) — a
     // stable identity for "is this the exact same source file", independent of
@@ -93,13 +117,27 @@ export async function classifyUploadBatch(eventId: string, files: UploadFileInpu
     if (existing) {
       outcome.duplicates.push({ filename: file.originalFilename })
       await cleanupTempFile(file)
-      continue
+      await cleanupOrphanedStorageObject(file)
+      return
     }
     outcome.accepted.push({ file, type, hash })
   }
 
+  for (let i = 0; i < files.length; i += UPLOAD_CONCURRENCY) {
+    await Promise.all(files.slice(i, i + UPLOAD_CONCURRENCY).map((f) => classifyOne(f)))
+  }
+
   return outcome
 }
+
+// Bounds how many files are read/hashed (classify) or uploaded+written (process)
+// concurrently. Purely a wall-clock optimization — handling a batch one file at a
+// time made total time scale linearly with batch count, and for a batch of real
+// (not tiny synthetic-test-sized) photos that alone was enough to make even a modest
+// 10-photo upload noticeably slow. Mirrors DRIVE_SYNC_CHUNK_SIZE in
+// modules/drive/service.ts — same reasoning, same bound. Declared once, used by both
+// classifyUploadBatch and processAcceptedFiles.
+const UPLOAD_CONCURRENCY = 5
 
 /**
  * Uploads every accepted file's bytes to storage and creates its Photo row. Stays
@@ -113,15 +151,6 @@ export async function classifyUploadBatch(eventId: string, files: UploadFileInpu
  * reliably finish on a serverless deployment — see api/index.js) means this function
  * itself never risks exceeding a request timeout, on any deployment.
  */
-// Bounds how many files' storage upload + DB write happen concurrently. Purely a
-// wall-clock optimization — uploading a batch one file at a time (the original
-// implementation) made the storage PUT latency add up linearly with batch size, and
-// for a batch of real (not tiny synthetic-test-sized) photos that alone was enough
-// to make even a modest 10-photo upload noticeably slow, and occasionally slow
-// enough to hit a serverless request's execution limit. Mirrors DRIVE_SYNC_CHUNK_SIZE
-// in modules/drive/service.ts — same reasoning, same bound.
-const UPLOAD_CONCURRENCY = 5
-
 export async function processAcceptedFiles(
   eventId: string,
   accepted: ClassifiedFile[],
@@ -149,12 +178,18 @@ export async function processAcceptedFiles(
       const buffer = await readInputBuffer(file)
       const isHeic = sniffedType === 'heic'
       const mimeType = isHeic ? 'image/heic' : sniffedType === 'png' ? 'image/png' : 'image/jpeg'
+      // A presigned-upload file's bytes are already sitting in storage at exactly
+      // this key (see presignUploads + UploadFileInput's own doc comment) — no need
+      // to write them again, just point the Photo row at the id already baked into
+      // that key.
+      const alreadyUploaded = !!file.storageKey
 
       const photo = await prisma.photo.create({
         data: {
+          ...(file.photoId ? { id: file.photoId } : {}),
           eventId,
           batchId: batch.id,
-          originalKey: 'pending',
+          originalKey: alreadyUploaded ? file.storageKey! : 'pending',
           fileHash: hash,
           originalFilename: file.originalFilename,
           mimeType,
@@ -178,9 +213,11 @@ export async function processAcceptedFiles(
       // whole function, deferred to PHOTO_HEIC_CONVERT (see this function's own doc
       // comment) instead of done here. The original bytes are uploaded as-is in the
       // meantime so nothing is lost if that job is delayed.
-      const key = storageKeys.original(eventId, photo.id, isHeic ? 'heic' : extensionForType(sniffedType))
-      await storage.putObject({ key, body: buffer, contentType: mimeType })
-      await prisma.photo.update({ where: { id: photo.id }, data: { originalKey: key } })
+      if (!alreadyUploaded) {
+        const key = storageKeys.original(eventId, photo.id, isHeic ? 'heic' : extensionForType(sniffedType))
+        await storage.putObject({ key, body: buffer, contentType: mimeType })
+        await prisma.photo.update({ where: { id: photo.id }, data: { originalKey: key } })
+      }
       await cleanupTempFile(file)
 
       if (isHeic) {
@@ -238,6 +275,43 @@ export async function uploadPhotoBatch(
   const classified = await classifyUploadBatch(eventId, files)
   const { accepted, failed } = await processAcceptedFiles(eventId, classified.accepted, actor)
   return { accepted, duplicates: classified.duplicates, rejected: [...classified.rejected, ...failed] }
+}
+
+// Long enough to comfortably cover picking files, a slow connection, and a batch of
+// several uploads happening one after another — but still a bounded window, since an
+// expired URL just means the client asks for a fresh one, not a security concern.
+const UPLOAD_URL_TTL_SECONDS = 15 * 60
+
+export interface PresignedUpload {
+  filename: string
+  photoId: string
+  key: string
+  uploadUrl: string
+  headers: Record<string, string>
+}
+
+/**
+ * Issues one presigned direct-to-storage upload URL per requested file, so the
+ * browser can PUT each file's bytes straight to storage instead of through this API
+ * — see UploadFileInput's own doc comment for why manual upload needs this at all
+ * (Vercel's hard ~4.5MB request body limit, which real phone photos routinely
+ * exceed). Each file gets its own pre-generated Photo id baked into its storage key
+ * up front, so `POST .../photos/finalize` (see modules/photos/router.ts) can create
+ * that exact row without a separate rename/copy step once the upload completes.
+ */
+export async function presignUploads(
+  eventId: string,
+  files: { filename: string; contentType: string }[]
+): Promise<PresignedUpload[]> {
+  const storage = getStorageProvider()
+  return Promise.all(
+    files.map(async (f) => {
+      const photoId = crypto.randomBytes(12).toString('hex')
+      const key = storageKeys.original(eventId, photoId, extensionFromFilename(f.filename))
+      const { url, headers } = await storage.getSignedUploadUrl(key, UPLOAD_URL_TTL_SECONDS, f.contentType || 'application/octet-stream')
+      return { filename: f.filename, photoId, key, uploadUrl: url, headers }
+    })
+  )
 }
 
 export async function retryPhotoProcessing(photoId: string, actor: { id: string; role: string }): Promise<void> {

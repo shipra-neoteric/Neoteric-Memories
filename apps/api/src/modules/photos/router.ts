@@ -70,6 +70,69 @@ photosRouter.post(
   })
 )
 
+const presignSchema = z.object({
+  files: z
+    .array(z.object({ filename: z.string().min(1), contentType: z.string().min(1) }))
+    .min(1)
+    .max(DEFAULTS.MAX_BATCH_PHOTO_COUNT),
+})
+
+// Vercel hard-rejects any request body over ~4.5MB regardless of our own code — real
+// phone photos routinely exceed that alone, let alone a batch of them in one
+// multipart request (see the "413 FUNCTION_PAYLOAD_TOO_LARGE" incident). These two
+// routes are what let the browser upload directly to storage instead: presign hands
+// back one signed PUT URL per file (this request/response is tiny — just filenames),
+// the browser PUTs each file straight to storage itself (bypassing this API
+// entirely), then finalize (small JSON, no file bytes either) tells the API which
+// storage keys are ready so it can validate/dedupe/create the actual Photo rows.
+photosRouter.post(
+  '/presign',
+  requirePermission('photo:upload'),
+  validateParams(idParams),
+  validateBody(presignSchema),
+  requireEventAssignment((req) => req.params.id),
+  asyncHandler(async (req, res) => {
+    const presigned = await photoService.presignUploads(req.params.id, req.body.files)
+    res.json({ files: presigned })
+  })
+)
+
+const finalizeSchema = z.object({
+  files: z
+    .array(z.object({ key: z.string().min(1), photoId: z.string().min(1), filename: z.string().min(1) }))
+    .min(1)
+    .max(DEFAULTS.MAX_BATCH_PHOTO_COUNT),
+})
+
+photosRouter.post(
+  '/finalize',
+  requirePermission('photo:upload'),
+  validateParams(idParams),
+  validateBody(finalizeSchema),
+  requireEventAssignment((req) => req.params.id),
+  asyncHandler(async (req, res) => {
+    const eventId = req.params.id
+    const inputs = (req.body.files as { key: string; photoId: string; filename: string }[]).map((f) => ({
+      storageKey: f.key,
+      photoId: f.photoId,
+      originalFilename: f.filename,
+      declaredMimeType: 'application/octet-stream',
+    }))
+
+    const classified = await photoService.classifyUploadBatch(eventId, inputs)
+    const processed =
+      classified.accepted.length > 0
+        ? await photoService.processAcceptedFiles(eventId, classified.accepted, req.user!)
+        : { accepted: [], failed: [] }
+
+    res.status(201).json({
+      accepted: processed.accepted,
+      duplicates: classified.duplicates,
+      rejected: [...classified.rejected, ...processed.failed],
+    })
+  })
+)
+
 const listQuery = paginationSchema.extend({ status: z.string().optional() })
 
 photosRouter.get(
