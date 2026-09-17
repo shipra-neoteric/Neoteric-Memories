@@ -110,7 +110,14 @@ export function EventDetailPage() {
     refetchInterval: 4000,
   })
   const { data: consentData } = useQuery({ queryKey: ['consent-versions'], queryFn: () => apiFetch<{ consentVersions: ConsentVersion[] }>('/api/admin/consent-versions') })
-  const { data: usersData } = useQuery({ queryKey: ['users'], queryFn: () => apiFetch<{ users: AdminUser[] }>('/api/admin/users') })
+  // Not the full /api/admin/users list — that requires 'user:manage', which
+  // MARKETING_HEAD doesn't have even though it can manage event assignments
+  // ('event:manage_assignments'). This narrower endpoint is gated by that
+  // permission instead, and only returns assignable staff.
+  const { data: usersData } = useQuery({
+    queryKey: ['assignable-users'],
+    queryFn: () => apiFetch<{ users: AdminUser[] }>('/api/admin/users/assignable'),
+  })
 
   const [qrResult, setQrResult] = useState<{ guestUrl: string; qrPngDataUrl: string; expiresAt: string } | null>(null)
 

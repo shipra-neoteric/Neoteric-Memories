@@ -25,6 +25,25 @@ usersRouter.get(
   })
 )
 
+// A much narrower read than the '/' route above — event assignment (picking an
+// EVENT_MANAGER/PHOTOGRAPHER for an event) is gated by 'event:manage_assignments',
+// which MARKETING_HEAD holds without holding 'user:manage'. Requiring 'user:manage'
+// just to populate that picker (the bug this fixes — EventDetailPage's assignment
+// UI was calling GET /users directly and 403ing for that role) would mean granting
+// the full user list, including roles/emails MARKETING_HEAD has no business
+// managing, just to fix a picker.
+usersRouter.get(
+  '/assignable',
+  requirePermission('event:manage_assignments'),
+  asyncHandler(async (_req, res) => {
+    const users = await getPrisma().user.findMany({
+      where: { role: { in: ['EVENT_MANAGER', 'PHOTOGRAPHER'] }, isActive: true },
+      orderBy: { name: 'asc' },
+    })
+    res.json({ users: users.map((u) => ({ id: u.id, name: u.name, role: u.role })) })
+  })
+)
+
 usersRouter.post(
   '/',
   requirePermission('user:manage'),
