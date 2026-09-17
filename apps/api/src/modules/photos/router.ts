@@ -10,7 +10,6 @@ import { requirePermission, requireEventAssignment } from '../../middleware/rbac
 import { getPrisma } from '../../db.js'
 import { Errors } from '../../lib/errors.js'
 import { getStorageProvider } from '../../providers/storage/index.js'
-import { logger } from '../../lib/logger.js'
 import * as photoService from './service.js'
 
 export const photosRouter = Router({ mergeParams: true })
@@ -49,27 +48,24 @@ photosRouter.post(
     const eventId = req.params.id
     const inputs = files.map((f) => ({ filePath: f.path, originalFilename: f.originalname, declaredMimeType: f.mimetype }))
 
-    // Classification (type sniffing + dedupe check) is a quick disk-read-and-hash
-    // pass, so it's fine to await here and give the client an immediate, specific
-    // breakdown of what was rejected/duplicate. The expensive part — HEIC conversion
-    // (a worker-thread round-trip per file) and the storage upload — is handed off to
-    // run in the background instead of being awaited: for a batch with several HEIC
-    // files that easily exceeds a reasonable HTTP timeout, which is exactly what was
-    // causing "Upload failed" (a dead connection, not a clean rejection) on real
-    // uploads. The event page's photos list already polls on an interval and picks up
-    // the results as they land.
+    // Both halves are awaited here and stay fast even for a large batch: classifying
+    // is just a disk-read-and-hash pass, and processing uploads each accepted file's
+    // bytes as-is without ever doing the slow HEIC->JPEG decode inline (see
+    // processAcceptedFiles's own doc comment) — that decode is deferred to a queued
+    // PHOTO_HEIC_CONVERT job instead, which is what actually fixed this route timing
+    // out on batches with several HEIC files (see the "manual upload timing out"
+    // incident). The event page's photos list already polls on an interval and shows
+    // each photo's real-time status as it's processed.
     const classified = await photoService.classifyUploadBatch(eventId, inputs)
+    const processed =
+      classified.accepted.length > 0
+        ? await photoService.processAcceptedFiles(eventId, classified.accepted, req.user!)
+        : { accepted: [], failed: [] }
 
-    if (classified.accepted.length > 0) {
-      void photoService.processAcceptedFiles(eventId, classified.accepted, req.user!).catch((err) => {
-        logger.error({ eventId }, `Background photo processing failed: ${err instanceof Error ? err.message : String(err)}`)
-      })
-    }
-
-    res.status(202).json({
-      queued: classified.accepted.length,
+    res.status(201).json({
+      accepted: processed.accepted,
       duplicates: classified.duplicates,
-      rejected: classified.rejected,
+      rejected: [...classified.rejected, ...processed.failed],
     })
   })
 )

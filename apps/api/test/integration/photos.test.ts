@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { getPrisma } from '../../src/db.js'
 import { processPhotoProcess } from '../../src/jobs/processors/photoProcess.js'
 import { renderSyntheticPhoto } from '../../src/devSeed/seedImages.js'
-import { app, loginAsAgent, makeSite, makeUser, validEventPayload, waitForPhotoReady } from '../helpers.js'
+import { app, loginAsAgent, makeSite, makeUser, validEventPayload } from '../helpers.js'
 
 async function createLiveableEvent() {
   const site = await makeSite()
@@ -18,10 +18,10 @@ describe('Photo upload + processing', () => {
     const buffer = await renderSyntheticPhoto([{ personId: 'person-1', x: 200, y: 100, size: 200 }], 'test photo')
 
     const res = await client.post(`/api/admin/events/${eventId}/photos`).attach('photos', buffer, 'photo1.jpg')
-    expect(res.status).toBe(202)
-    expect(res.body.queued).toBe(1)
+    expect(res.status).toBe(201)
+    expect(res.body.accepted).toHaveLength(1)
 
-    const photoId = await waitForPhotoReady(eventId, 'photo1.jpg')
+    const photoId = res.body.accepted[0].photoId as string
     await processPhotoProcess({ photoId })
 
     const photo = await getPrisma().photo.findUnique({ where: { id: photoId } })
@@ -35,8 +35,8 @@ describe('Photo upload + processing', () => {
   it('flags a photo with no detected faces as NO_FACES rather than failing the batch', async () => {
     const { client, eventId } = await createLiveableEvent()
     const buffer = await renderSyntheticPhoto([], 'empty photo')
-    await client.post(`/api/admin/events/${eventId}/photos`).attach('photos', buffer, 'empty.jpg')
-    const photoId = await waitForPhotoReady(eventId, 'empty.jpg')
+    const res = await client.post(`/api/admin/events/${eventId}/photos`).attach('photos', buffer, 'empty.jpg')
+    const photoId = res.body.accepted[0].photoId as string
     await processPhotoProcess({ photoId })
     const photo = await getPrisma().photo.findUnique({ where: { id: photoId } })
     expect(photo?.status).toBe('NO_FACES')
@@ -48,11 +48,10 @@ describe('Photo upload + processing', () => {
     const buffer = await renderSyntheticPhoto([{ personId: 'person-2', x: 150, y: 120, size: 180 }], 'dup test')
 
     const first = await client.post(`/api/admin/events/${eventId}/photos`).attach('photos', buffer, 'a.jpg')
-    expect(first.body.queued).toBe(1)
-    await waitForPhotoReady(eventId, 'a.jpg')
+    expect(first.body.accepted).toHaveLength(1)
 
     const second = await client.post(`/api/admin/events/${eventId}/photos`).attach('photos', buffer, 'a-retry.jpg')
-    expect(second.body.queued).toBe(0)
+    expect(second.body.accepted).toHaveLength(0)
     expect(second.body.duplicates).toHaveLength(1)
 
     const count = await getPrisma().photo.count({ where: { eventId } })
@@ -62,8 +61,8 @@ describe('Photo upload + processing', () => {
   it('reprocessing the same photo (idempotent retry) does not double the indexed face count', async () => {
     const { client, eventId } = await createLiveableEvent()
     const buffer = await renderSyntheticPhoto([{ personId: 'person-3', x: 150, y: 120, size: 180 }], 'idempotent test')
-    await client.post(`/api/admin/events/${eventId}/photos`).attach('photos', buffer, 'idem.jpg')
-    const photoId = await waitForPhotoReady(eventId, 'idem.jpg')
+    const res = await client.post(`/api/admin/events/${eventId}/photos`).attach('photos', buffer, 'idem.jpg')
+    const photoId = res.body.accepted[0].photoId as string
 
     await processPhotoProcess({ photoId })
     await processPhotoProcess({ photoId }) // simulate a retried/duplicated job
@@ -77,16 +76,16 @@ describe('Photo upload + processing', () => {
     const res = await client
       .post(`/api/admin/events/${eventId}/photos`)
       .attach('photos', Buffer.from('this is not an image'), 'notreal.jpg')
-    expect(res.status).toBe(202)
-    expect(res.body.queued).toBe(0)
+    expect(res.status).toBe(201)
+    expect(res.body.accepted).toHaveLength(0)
     expect(res.body.rejected).toHaveLength(1)
   })
 
   it('a deleted photo is excluded from further admin listing and its indexed faces are removed', async () => {
     const { client, eventId } = await createLiveableEvent()
     const buffer = await renderSyntheticPhoto([{ personId: 'person-4', x: 150, y: 120, size: 180 }], 'delete test')
-    await client.post(`/api/admin/events/${eventId}/photos`).attach('photos', buffer, 'del.jpg')
-    const photoId = await waitForPhotoReady(eventId, 'del.jpg')
+    const res = await client.post(`/api/admin/events/${eventId}/photos`).attach('photos', buffer, 'del.jpg')
+    const photoId = res.body.accepted[0].photoId as string
     await processPhotoProcess({ photoId })
 
     const del = await client.delete(`/api/admin/events/${eventId}/photos/${photoId}`)
@@ -97,5 +96,30 @@ describe('Photo upload + processing', () => {
 
     const list = await client.get(`/api/admin/events/${eventId}/photos`)
     expect(list.body.photos.find((p: { id: string }) => p.id === photoId)).toBeUndefined()
+  })
+
+  it('uploads a HEIC photo, stages it as-is, and processes it via the deferred conversion job', async () => {
+    const { client, eventId } = await createLiveableEvent()
+    // Minimal valid HEIC magic bytes (ftyp box with a heic brand) — see
+    // lib/fileValidation.ts's sniffImageType for what it checks.
+    const heicHeader = Buffer.concat([
+      Buffer.from([0x00, 0x00, 0x00, 0x18]),
+      Buffer.from('ftyp', 'ascii'),
+      Buffer.from('heic', 'ascii'),
+      Buffer.alloc(8),
+    ])
+
+    const res = await client.post(`/api/admin/events/${eventId}/photos`).attach('photos', heicHeader, 'photo.heic')
+    expect(res.status).toBe(201)
+    expect(res.body.accepted).toHaveLength(1)
+
+    const photoId = res.body.accepted[0].photoId as string
+    const staged = await getPrisma().photo.findUnique({ where: { id: photoId } })
+    expect(staged?.status).toBe('PENDING')
+    expect(staged?.mimeType).toBe('image/heic')
+    expect(staged?.originalKey).toMatch(/\.heic$/)
+
+    const job = await getPrisma().backgroundJob.findFirst({ where: { type: 'PHOTO_HEIC_CONVERT', idempotencyKey: `heic-convert:${photoId}` } })
+    expect(job).toBeTruthy()
   })
 })

@@ -58,6 +58,7 @@ export type GuestSessionStatus = (typeof GUEST_SESSION_STATUSES)[number]
 
 export const BACKGROUND_JOB_TYPES = [
   'PHOTO_PROCESS',
+  'PHOTO_HEIC_CONVERT',
   'ZIP_GENERATE',
   'RETENTION_SWEEP',
   'SELFIE_DELETE',

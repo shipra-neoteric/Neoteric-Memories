@@ -118,6 +118,7 @@ enum WrongMatchStatus {
 
 enum BackgroundJobType {
   PHOTO_PROCESS
+  PHOTO_HEIC_CONVERT
   ZIP_GENERATE
   RETENTION_SWEEP
   SELFIE_DELETE

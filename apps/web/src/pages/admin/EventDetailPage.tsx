@@ -164,18 +164,17 @@ export function EventDetailPage() {
     mutationFn: async (files: File[]) => {
       const form = new FormData()
       files.forEach((f) => form.append('photos', f))
-      // The server only does the quick part (type-check + duplicate check) before
-      // responding — actual processing (HEIC conversion, storage upload) happens in
-      // the background, since that part alone can take long enough to exceed the
-      // request timeout for a batch with several HEIC files. The photos list below
-      // already polls on an interval, so queued photos show up there as they land.
-      return apiFetch<{ queued: number; duplicates: { filename: string }[]; rejected: { filename: string; reason: string }[] }>(
+      // HEIC files are uploaded as-is here and converted by a background job (see
+      // photos/service.ts's processAcceptedFiles) rather than inline, so this request
+      // itself stays fast regardless of file format — the photos list below polls on
+      // an interval and shows each photo's real status as it's processed.
+      return apiFetch<{ accepted: unknown[]; duplicates: unknown[]; rejected: { filename: string; reason: string }[] }>(
         `/api/admin/events/${eventId}/photos`,
         { method: 'POST', body: form }
       )
     },
     onSuccess: (res) => {
-      if (res.queued > 0) toastSuccess(`${res.queued} photo(s) queued — they'll appear below as they're processed`)
+      if (res.accepted.length) toastSuccess(`${res.accepted.length} photo(s) uploaded and queued for processing`)
       if (res.duplicates.length) toastError(`${res.duplicates.length} file(s) skipped as duplicates`)
       if (res.rejected.length) toastError(`${res.rejected.length} file(s) rejected: ${res.rejected[0].reason}`)
       invalidate()

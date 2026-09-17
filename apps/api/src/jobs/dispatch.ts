@@ -1,5 +1,6 @@
 import type { BackgroundJobType } from '@neoteric-memories/shared'
 import { processPhotoProcess } from './processors/photoProcess.js'
+import { processHeicConvert } from './processors/photoHeicConvert.js'
 import { processZipGenerate } from './processors/zipGenerate.js'
 import { processSelfieDelete } from './processors/selfieDelete.js'
 import { processEventCollectionDelete } from './processors/eventCollectionDelete.js'
@@ -11,6 +12,8 @@ export async function dispatchJob(type: BackgroundJobType, payload: any): Promis
   switch (type) {
     case 'PHOTO_PROCESS':
       return processPhotoProcess(payload)
+    case 'PHOTO_HEIC_CONVERT':
+      return processHeicConvert(payload)
     case 'ZIP_GENERATE':
       return processZipGenerate(payload)
     case 'SELFIE_DELETE':

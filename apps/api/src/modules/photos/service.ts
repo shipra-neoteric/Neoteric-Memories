@@ -4,7 +4,6 @@ import { getStorageProvider } from '../../providers/storage/index.js'
 import { getFaceSearchProvider } from '../../providers/faceSearch/index.js'
 import { enqueueJob } from '../../jobs/queue.js'
 import { sniffImageType, extensionForType } from '../../lib/fileValidation.js'
-import { convertHeicToJpeg } from '../../lib/heicConvert.js'
 import { hashFile } from '../../lib/hash.js'
 import { storageKeys } from '../../lib/storageKeys.js'
 import { logger } from '../../lib/logger.js'
@@ -103,12 +102,16 @@ export async function classifyUploadBatch(eventId: string, files: UploadFileInpu
 }
 
 /**
- * The slow half of an upload: HEIC->JPEG conversion (a worker-thread round-trip per
- * file, see lib/heicConvert.ts) and the storage upload itself. For a batch with
- * several HEIC files this can easily run past any reasonable HTTP timeout, so the
- * manual upload route fires this off in the background instead of awaiting it — the
- * already-existing periodic photos-list refetch on the event page is what surfaces
- * the results as they land.
+ * Uploads every accepted file's bytes to storage and creates its Photo row. Stays
+ * fast and safe to await directly inside an HTTP request even for a large batch:
+ * HEIC files are NOT converted here — their original bytes are uploaded as-is and a
+ * PHOTO_HEIC_CONVERT job (see jobs/processors/photoHeicConvert.ts) is queued to do
+ * the actual worker-thread HEIC->JPEG decode later. That decode is the one genuinely
+ * slow, unpredictable step in the whole upload (see the "manual upload timing out"
+ * incident) — deferring it to the job queue instead of running it inline (like this
+ * function used to) or firing it off unawaited after responding (which doesn't
+ * reliably finish on a serverless deployment — see api/index.js) means this function
+ * itself never risks exceeding a request timeout, on any deployment.
  */
 export async function processAcceptedFiles(
   eventId: string,
@@ -133,25 +136,9 @@ export async function processAcceptedFiles(
 
     const storage = getStorageProvider()
     for (const { file, type: sniffedType, hash } of accepted) {
-      let buffer = await readInputBuffer(file)
-      let type: 'jpeg' | 'png' = sniffedType === 'png' ? 'png' : 'jpeg'
-
-      if (sniffedType === 'heic') {
-        // HEIC is the default photo format on iPhone — reject it outright would mean
-        // guests/admins can never use photos straight off an iPhone without manually
-        // converting first. sharp can't decode it (its prebuilt binary only ships the
-        // unlicensed AVIF/AV1 codec, not HEIC's licensed HEVC one), so convert it to a
-        // real JPEG up front via a pure-JS/WASM decoder instead, then treat it exactly
-        // like any other JPEG for the rest of the pipeline.
-        const converted = await convertHeicToJpeg(buffer)
-        if (!converted) {
-          result.failed.push({ filename: file.originalFilename, reason: 'This HEIC file could not be converted — it may be corrupted or in an unsupported HEIC variant.' })
-          await cleanupTempFile(file)
-          continue
-        }
-        buffer = converted
-        type = 'jpeg'
-      }
+      const buffer = await readInputBuffer(file)
+      const isHeic = sniffedType === 'heic'
+      const mimeType = isHeic ? 'image/heic' : sniffedType === 'png' ? 'image/png' : 'image/jpeg'
 
       const photo = await prisma.photo.create({
         data: {
@@ -160,7 +147,7 @@ export async function processAcceptedFiles(
           originalKey: 'pending',
           fileHash: hash,
           originalFilename: file.originalFilename,
-          mimeType: type === 'png' ? 'image/png' : 'image/jpeg',
+          mimeType,
           sizeBytes: buffer.length,
           status: 'PENDING',
           uploadedById: actor.id,
@@ -173,12 +160,24 @@ export async function processAcceptedFiles(
           deletedAt: null,
         },
       })
-      const key = storageKeys.original(eventId, photo.id, extensionForType(type))
-      await storage.putObject({ key, body: buffer, contentType: type === 'png' ? 'image/png' : 'image/jpeg' })
+      // HEIC is the default photo format on iPhone — reject it outright would mean
+      // guests/admins can never use photos straight off an iPhone without manually
+      // converting first. sharp can't decode it (its prebuilt binary only ships the
+      // unlicensed AVIF/AV1 codec, not HEIC's licensed HEVC one), so it needs a real
+      // decode via a pure-JS/WASM library — the one slow, unpredictable step in this
+      // whole function, deferred to PHOTO_HEIC_CONVERT (see this function's own doc
+      // comment) instead of done here. The original bytes are uploaded as-is in the
+      // meantime so nothing is lost if that job is delayed.
+      const key = storageKeys.original(eventId, photo.id, isHeic ? 'heic' : extensionForType(sniffedType))
+      await storage.putObject({ key, body: buffer, contentType: mimeType })
       await prisma.photo.update({ where: { id: photo.id }, data: { originalKey: key } })
       await cleanupTempFile(file)
 
-      await enqueueJob('PHOTO_PROCESS', { photoId: photo.id }, `photo-process:${photo.id}`)
+      if (isHeic) {
+        await enqueueJob('PHOTO_HEIC_CONVERT', { photoId: photo.id }, `heic-convert:${photo.id}`)
+      } else {
+        await enqueueJob('PHOTO_PROCESS', { photoId: photo.id }, `photo-process:${photo.id}`)
+      }
       result.accepted.push({ photoId: photo.id, filename: file.originalFilename })
     }
 

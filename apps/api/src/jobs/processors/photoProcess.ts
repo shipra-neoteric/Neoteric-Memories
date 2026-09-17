@@ -94,7 +94,7 @@ export async function processPhotoProcess(payload: { photoId: string }): Promise
   }
 }
 
-async function finalizeBatchIfDone(batchId: string): Promise<void> {
+export async function finalizeBatchIfDone(batchId: string): Promise<void> {
   const prisma = getPrisma()
   const batch = await prisma.photoBatch.findUnique({ where: { id: batchId } })
   if (!batch) return

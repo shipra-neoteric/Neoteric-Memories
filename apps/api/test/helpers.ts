@@ -75,37 +75,7 @@ export function futureDate(msFromNow: number): Date {
   return new Date(Date.now() + msFromNow)
 }
 
-/**
- * Polls `check` until it returns a truthy value, for asserting on work that a route
- * deliberately kicks off in the background instead of awaiting (e.g. the photo
- * upload route's HEIC conversion + storage upload — see modules/photos/router.ts).
- * Throws if `check` hasn't returned truthy within `timeoutMs`.
- */
-export async function waitFor<T>(check: () => Promise<T | undefined | null | false>, timeoutMs = 5000, intervalMs = 50): Promise<T> {
-  const deadline = Date.now() + timeoutMs
-  for (;;) {
-    const result = await check()
-    if (result) return result
-    if (Date.now() >= deadline) throw new Error(`waitFor: condition not met within ${timeoutMs}ms`)
-    await new Promise((resolve) => setTimeout(resolve, intervalMs))
-  }
-}
-
 export const DAY_MS = 24 * 60 * 60 * 1000
-
-/**
- * The photo upload route only awaits the quick classification pass before
- * responding — the actual DB row + storage upload happen in the background (see
- * modules/photos/router.ts) — so tests wait for the photo to be fully written
- * (originalKey moves off its 'pending' placeholder once the storage upload
- * finishes) rather than reading a photoId off the upload response.
- */
-export async function waitForPhotoReady(eventId: string, originalFilename: string): Promise<string> {
-  const photo = await waitFor(() =>
-    getPrisma().photo.findFirst({ where: { eventId, originalFilename, originalKey: { not: 'pending' } } })
-  )
-  return photo.id
-}
 
 export async function setupLiveEvent(markerPersonId: string | null, overrides: Record<string, unknown> = {}) {
   const { renderSyntheticPhoto } = await import('../src/devSeed/seedImages.js')
@@ -125,8 +95,8 @@ export async function setupLiveEvent(markerPersonId: string | null, overrides: R
     markerPersonId ? [{ personId: markerPersonId, x: 200, y: 100, size: 220 }] : [],
     'guest flow test photo'
   )
-  await client.post(`/api/admin/events/${eventId}/photos`).attach('photos', buffer, 'photo.jpg')
-  const photoId = await waitForPhotoReady(eventId, 'photo.jpg')
+  const upload = await client.post(`/api/admin/events/${eventId}/photos`).attach('photos', buffer, 'photo.jpg')
+  const photoId = upload.body.accepted[0]?.photoId as string | undefined
   if (photoId) await processPhotoProcess({ photoId })
 
   await client.post(`/api/admin/events/${eventId}/status`).send({ status: 'LIVE' })
