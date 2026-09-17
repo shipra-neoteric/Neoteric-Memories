@@ -113,7 +113,12 @@ export async function classifyUploadBatch(eventId: string, files: UploadFileInpu
     // stable identity for "is this the exact same source file", independent of
     // whatever a WASM decoder's output happens to be on a given run.
     const hash = hashFile(buffer)
-    const existing = await prisma.photo.findUnique({ where: { eventId_fileHash: { eventId, fileHash: hash } } })
+    // Not findUnique on the eventId_fileHash index directly — a soft-deleted photo
+    // (deletedAt set) must not count as a duplicate, or the exact same file could
+    // never be re-uploaded after being deleted. deletePhoto mangles fileHash on
+    // delete going forward, but this filter also covers any already-deleted row
+    // from before that fix shipped.
+    const existing = await prisma.photo.findFirst({ where: { eventId, fileHash: hash, deletedAt: null } })
     if (existing) {
       outcome.duplicates.push({ filename: file.originalFilename })
       await cleanupTempFile(file)
@@ -366,7 +371,15 @@ export async function deletePhoto(photoId: string, actor: { id: string; role: st
   const keys = [photo.originalKey, photo.thumbnailKey, photo.previewKey].filter((k): k is string => !!k)
   if (keys.length > 0) await storage.deleteObjects(keys)
 
-  await prisma.photo.update({ where: { id: photoId }, data: { status: 'DELETED', deletedAt: new Date() } })
+  // fileHash is mangled (not just left as-is) so it stops occupying the
+  // eventId+fileHash unique slot (schema.prisma's @@unique) — otherwise re-uploading
+  // this exact same file later would be permanently misreported as a duplicate (and
+  // rejected) by classifyUploadBatch's lookup, which was the actual bug behind "28
+  // photos duplicate, nothing uploads" after a bulk delete.
+  await prisma.photo.update({
+    where: { id: photoId },
+    data: { status: 'DELETED', deletedAt: new Date(), fileHash: `${photo.fileHash}:deleted:${photo.id}` },
+  })
   await writeAuditLog({ actorId: actor.id, actorRole: actor.role, action: 'photo.delete', entityType: 'Photo', entityId: photoId, eventId: photo.eventId })
 }
 
