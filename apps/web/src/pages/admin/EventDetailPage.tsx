@@ -159,6 +159,21 @@ export function EventDetailPage() {
 
   const pendingPhotoCount = (photosData?.photos ?? []).filter((p) => p.status === 'PENDING' || p.status === 'PROCESSING').length
 
+  // Covers photos that show up PENDING from a source other than this tab's own
+  // upload/Sync-Now click — most notably a Drive sync that ran via the periodic
+  // recovery cron or the admin-triggered sync on a DIFFERENT tab/device, where
+  // nothing here ever called drainPhotoJobs() directly. Whenever the polled photo
+  // list (refetchInterval above) shows pending work and nothing is already draining,
+  // this starts one drain pass automatically — the same "Resume processing" flow the
+  // button below triggers manually, just self-triggered instead of requiring a click.
+  // Safe to fire on every render where the condition holds: drainPhotoJobs() itself
+  // is idempotent (claims are still exactly-once) and bounded (MAX_DRAIN_ATTEMPTS),
+  // and isDraining prevents overlapping runs.
+  useEffect(() => {
+    if (pendingPhotoCount > 0 && !isDraining) void drainPhotoJobs()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingPhotoCount, isDraining])
+
   const updateEvent = useMutation({
     mutationFn: (body: Record<string, unknown>) => apiFetch(`/api/admin/events/${eventId}`, { method: 'PATCH', body }),
     onSuccess: () => {
