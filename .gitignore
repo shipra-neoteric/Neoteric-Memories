@@ -16,3 +16,6 @@ apps/api/test/.storage/
 apps/api/.seed-output.json
 apps/api/seed-assets/
 *.tsbuildinfo
+
+.vercel
+.env*

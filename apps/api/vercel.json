@@ -2,6 +2,7 @@
   "framework": null,
   "installCommand": "npm install --include=dev",
   "buildCommand": "npm run build -w @neoteric-memories/shared && npm run build -w @neoteric-memories/api",
+  "outputDirectory": "public",
   "rewrites": [{ "source": "/(.*)", "destination": "/api" }],
   "functions": {
     "api/index.js": {
