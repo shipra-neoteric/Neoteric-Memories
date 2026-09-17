@@ -100,12 +100,21 @@ const DRIVE_SYNC_CHUNK_SIZE = 10
 // (every unrelated request, not just this one) starved for minutes, which is exactly
 // what took the entire admin panel down in production once. Capping how many files
 // one sync *run* will touch bounds the worst case regardless of folder size — the
-// rest gets picked up by the next scheduled run (every DRIVE_SYNC_INTERVAL_MINUTES),
-// so a big backlog drains gradually instead of overloading the server in one shot.
-// lastSyncedAt only advances once a run actually clears the whole backlog it found;
-// otherwise the next run re-lists it, safely re-skipping already-imported files via
-// uploadPhotoBatch's fileHash dedupe, and makes further progress.
-const MAX_FILES_PER_SYNC_RUN = 30
+// rest gets picked up by the next scheduled run (every DRIVE_SYNC_INTERVAL_MINUTES,
+// or a "Sync Now" click), so a big backlog drains gradually instead of overloading
+// the server in one shot. lastSyncedAt only advances once a run actually clears the
+// whole backlog it found; otherwise the next run re-lists it, safely re-skipping
+// already-imported files via uploadPhotoBatch's fileHash dedupe, and makes further
+// progress.
+//
+// Lowered from 30 to 5 when this app moved to running on Vercel (a serverless
+// function with a bounded execution time per invocation, unlike Render's persistent
+// process where "this run takes a while" was never itself a problem) — each file
+// here is a real network round trip (Drive download + storage upload), so even a
+// modest file count can add up to more wall-clock time than a single invocation can
+// safely spend. A large Drive folder now takes more sync runs to fully drain, but
+// each run is safe regardless of Drive folder size.
+const MAX_FILES_PER_SYNC_RUN = 5
 
 /** Imports every new image in one connected folder since the last sync, through the exact same validation/dedupe/processing pipeline as a manual upload. */
 export async function syncOneIntegration(integration: {
@@ -173,12 +182,22 @@ export async function syncOneIntegration(integration: {
   return { imported: accepted, summary }
 }
 
-export async function runDriveSyncSweep(): Promise<{ integrationsSynced: number; photosImported: number }> {
+/**
+ * Syncs every ACTIVE integration (the periodic sweep — see DRIVE_SYNC's dispatch in
+ * jobs/dispatch.ts when its payload has no eventId), or just one specific event's
+ * integration when eventId is given (the "Sync Now" button — see
+ * modules/drive/router.ts's POST /sync-now, which enqueues a DRIVE_SYNC job scoped
+ * to that one event via payload.eventId, deliberately never the whole-sweep path, so
+ * one admin clicking "Sync Now" can never end up driving another event's sync).
+ */
+export async function runDriveSyncSweep(eventId?: string): Promise<{ integrationsSynced: number; photosImported: number }> {
   // Belt-and-suspenders: even if something schedules this under the test runtime,
   // never reach out to real Google Drive accounts — no-op instead.
   if (isTestRuntime()) return { integrationsSynced: 0, photosImported: 0 }
   const prisma = getPrisma()
-  const integrations = await prisma.driveIntegration.findMany({ where: { status: 'ACTIVE', folderId: { not: null } } })
+  const integrations = await prisma.driveIntegration.findMany({
+    where: { status: 'ACTIVE', folderId: { not: null }, ...(eventId ? { eventId } : {}) },
+  })
 
   let photosImported = 0
   for (const integration of integrations) {

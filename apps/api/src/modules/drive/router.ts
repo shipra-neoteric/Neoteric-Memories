@@ -1,3 +1,4 @@
+import crypto from 'node:crypto'
 import { Router } from 'express'
 import { z } from 'zod'
 import { objectIdSchema } from '@neoteric-memories/shared'
@@ -6,9 +7,9 @@ import { validateBody, validateParams } from '../../middleware/validate.js'
 import { requirePermission } from '../../middleware/rbac.js'
 import { getPrisma } from '../../db.js'
 import { Errors } from '../../lib/errors.js'
-import { logger } from '../../lib/logger.js'
+import { enqueueJob } from '../../jobs/queue.js'
+import { claimAndRunScopedJob } from '../../jobs/loop.js'
 import * as driveService from './service.js'
-import { syncOneIntegration } from './service.js'
 
 export const driveRouter = Router({ mergeParams: true })
 const idParams = z.object({ id: objectIdSchema })
@@ -74,20 +75,30 @@ driveRouter.post(
   requirePermission('event:manage_integrations'),
   validateParams(idParams),
   asyncHandler(async (req, res) => {
-    const integration = await getPrisma().driveIntegration.findUnique({ where: { eventId: req.params.id } })
+    const eventId = req.params.id
+    const integration = await getPrisma().driveIntegration.findUnique({ where: { eventId } })
     if (!integration || !integration.folderId) throw Errors.notFound('No active Drive folder connection for this event')
-    // Deliberately not awaited: a sync can process dozens of files (each involving a
-    // Drive download, possible HEIC decode, and an S3 upload) and take well past any
-    // reasonable HTTP request timeout. Responding immediately and letting the client
-    // poll GET / (already on a 15s interval) for the result — via lastSyncSummary —
-    // is what stops a slow sync from holding an HTTP connection open at all, on top
-    // of MAX_FILES_PER_SYNC_RUN bounding how much work a single run can ever do.
-    void syncOneIntegration(integration).catch((err) => {
-      const message = err instanceof Error ? err.message : String(err)
-      logger.error({ eventId: integration.eventId }, `Manual Drive sync failed: ${message}`)
-      void getPrisma().driveIntegration.update({ where: { id: integration.id }, data: { status: 'ERROR', lastError: message } })
+
+    // Enqueues, then immediately claims and runs that one job in this same request —
+    // this is the "same bounded processing mechanism" the manual upload flow uses
+    // (see modules/jobs/router.ts's POST /process-next), applied to Drive sync. A
+    // fresh idempotency key every click (not a time-bucketed one) is deliberate: this
+    // is a manual admin action, not a scheduled tick, so repeated clicks must each be
+    // able to enqueue and run rather than silently no-op against an earlier job's key.
+    // MAX_FILES_PER_SYNC_RUN (modules/drive/service.ts) still bounds a single run to a
+    // handful of files, so this stays safe well under any reasonable request timeout;
+    // a folder with more new files than that shows up in lastSyncSummary ("N more
+    // queued") and the client re-clicks — see EventDetailPage.tsx's syncNow mutation.
+    await enqueueJob('DRIVE_SYNC', { eventId }, `drive-sync-now:${eventId}:${crypto.randomUUID()}`)
+    const outcome = await claimAndRunScopedJob({ types: ['DRIVE_SYNC'], match: { eventId } })
+
+    const fresh = await getPrisma().driveIntegration.findUnique({ where: { eventId } })
+    res.json({
+      processed: outcome.processed,
+      result: outcome.result,
+      errorMessage: outcome.errorMessage,
+      integration: fresh ? toSafeIntegration(fresh) : null,
     })
-    res.status(202).json({ status: 'started' })
   })
 )
 

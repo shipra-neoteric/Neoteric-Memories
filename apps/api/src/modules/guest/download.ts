@@ -3,6 +3,7 @@ import { getPrisma } from '../../db.js'
 import { Errors } from '../../lib/errors.js'
 import { getStorageProvider } from '../../providers/storage/index.js'
 import { enqueueJob } from '../../jobs/queue.js'
+import { claimAndRunScopedJob, type ScopedJobResult } from '../../jobs/loop.js'
 
 /** Only photoIds that actually appear in this guest's own completed search results are ever eligible — guests can never request an arbitrary event photoId (IDOR guard). */
 async function eligiblePhotoIds(searchId: string, guestSessionId: string): Promise<string[]> {
@@ -49,6 +50,23 @@ export async function createZipDownloadJob(
   })
   await enqueueJob('ZIP_GENERATE', { downloadJobId: job.id }, `zip-generate:${job.id}`)
   return job.id
+}
+
+/**
+ * Claims and runs this guest's own ZIP_GENERATE job right now, instead of waiting for
+ * the GitHub Actions recovery cron's next tick (see .github/workflows/backend-cron.yml
+ * — a free, but not promptly-timed, backstop) or a persistent worker (not run on the
+ * Vercel deployment — see api/index.js). Ownership is checked the same way
+ * getDownloadJobStatus already does: this only ever touches a job belonging to the
+ * guestSessionId making the request, via claimAndRunScopedJob's exact-payload-match
+ * scoping (downloadJobId) — a guest can never trigger or observe another guest's
+ * download job this way.
+ */
+export async function processZipDownloadJobNow(downloadJobId: string, guestSessionId: string): Promise<ScopedJobResult> {
+  const prisma = getPrisma()
+  const job = await prisma.downloadJob.findUnique({ where: { id: downloadJobId } })
+  if (!job || job.guestSessionId !== guestSessionId) throw Errors.notFound('Download not found')
+  return claimAndRunScopedJob({ types: ['ZIP_GENERATE'], match: { downloadJobId } })
 }
 
 export async function getDownloadJobStatus(downloadJobId: string, guestSessionId: string) {

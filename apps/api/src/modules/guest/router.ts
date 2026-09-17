@@ -15,7 +15,7 @@ import { resolveGuestAccessToken } from '../events/accessTokens.js'
 import { getOrCreateGuestSession, requireActiveSession, requireLiveEventForSession, checkAndIncrementSelfieAttempt, checkDeviceSearchLimit } from './session.js'
 import { submitConsent, hasValidConsent } from './consent.js'
 import { performSelfieSearch, SelfieRejectedError } from './selfieSearch.js'
-import { getSinglePhotoDownloadUrl, createZipDownloadJob, getDownloadJobStatus } from './download.js'
+import { getSinglePhotoDownloadUrl, createZipDownloadJob, getDownloadJobStatus, processZipDownloadJobNow } from './download.js'
 import { reportWrongMatch } from './wrongMatch.js'
 import { deleteGuestSessionData } from './sessionDeletion.js'
 
@@ -204,6 +204,24 @@ guestRouter.get(
   asyncHandler(async (req, res) => {
     const status = await getDownloadJobStatus(req.params.downloadJobId, req.params.sessionId)
     res.json(status)
+  })
+)
+
+// Claims and runs this guest's own ZIP_GENERATE job right now, instead of relying
+// solely on the GitHub Actions recovery cron's next tick (which, per its own doc
+// comment, is a free backstop but not a promise of prompt timing). The guest UI calls
+// this once right after creating the download job, same "enqueue, then immediately
+// trigger the bounded processor" pattern used by the admin upload/Drive-sync flows —
+// see jobs/loop.ts's claimAndRunScopedJob for the shared claiming mechanism and its
+// ownership/scoping guarantees.
+guestRouter.post(
+  '/sessions/:sessionId/downloads/:downloadJobId/process',
+  validateParams(downloadJobParams),
+  requireGuestSessionCookie,
+  asyncHandler(async (req, res) => {
+    await requireActiveSession(req.params.sessionId)
+    const outcome = await processZipDownloadJobNow(req.params.downloadJobId, req.params.sessionId)
+    res.json({ processed: outcome.processed, result: outcome.result })
   })
 )
 

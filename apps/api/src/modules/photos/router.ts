@@ -60,12 +60,13 @@ photosRouter.post(
     const processed =
       classified.accepted.length > 0
         ? await photoService.processAcceptedFiles(eventId, classified.accepted, req.user!)
-        : { accepted: [], failed: [] }
+        : { accepted: [], failed: [], batchId: null }
 
     res.status(201).json({
       accepted: processed.accepted,
       duplicates: classified.duplicates,
       rejected: [...classified.rejected, ...processed.failed],
+      batchId: processed.batchId,
     })
   })
 )
@@ -123,12 +124,13 @@ photosRouter.post(
     const processed =
       classified.accepted.length > 0
         ? await photoService.processAcceptedFiles(eventId, classified.accepted, req.user!)
-        : { accepted: [], failed: [] }
+        : { accepted: [], failed: [], batchId: null }
 
     res.status(201).json({
       accepted: processed.accepted,
       duplicates: classified.duplicates,
       rejected: [...classified.rejected, ...processed.failed],
+      batchId: processed.batchId,
     })
   })
 )
