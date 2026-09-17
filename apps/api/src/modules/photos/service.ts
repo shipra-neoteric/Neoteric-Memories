@@ -113,6 +113,15 @@ export async function classifyUploadBatch(eventId: string, files: UploadFileInpu
  * reliably finish on a serverless deployment — see api/index.js) means this function
  * itself never risks exceeding a request timeout, on any deployment.
  */
+// Bounds how many files' storage upload + DB write happen concurrently. Purely a
+// wall-clock optimization — uploading a batch one file at a time (the original
+// implementation) made the storage PUT latency add up linearly with batch size, and
+// for a batch of real (not tiny synthetic-test-sized) photos that alone was enough
+// to make even a modest 10-photo upload noticeably slow, and occasionally slow
+// enough to hit a serverless request's execution limit. Mirrors DRIVE_SYNC_CHUNK_SIZE
+// in modules/drive/service.ts — same reasoning, same bound.
+const UPLOAD_CONCURRENCY = 5
+
 export async function processAcceptedFiles(
   eventId: string,
   accepted: ClassifiedFile[],
@@ -135,7 +144,8 @@ export async function processAcceptedFiles(
     })
 
     const storage = getStorageProvider()
-    for (const { file, type: sniffedType, hash } of accepted) {
+
+    const uploadOne = async ({ file, type: sniffedType, hash }: ClassifiedFile): Promise<{ photoId: string; filename: string }> => {
       const buffer = await readInputBuffer(file)
       const isHeic = sniffedType === 'heic'
       const mimeType = isHeic ? 'image/heic' : sniffedType === 'png' ? 'image/png' : 'image/jpeg'
@@ -178,7 +188,13 @@ export async function processAcceptedFiles(
       } else {
         await enqueueJob('PHOTO_PROCESS', { photoId: photo.id }, `photo-process:${photo.id}`)
       }
-      result.accepted.push({ photoId: photo.id, filename: file.originalFilename })
+      return { photoId: photo.id, filename: file.originalFilename }
+    }
+
+    for (let i = 0; i < accepted.length; i += UPLOAD_CONCURRENCY) {
+      const chunk = accepted.slice(i, i + UPLOAD_CONCURRENCY)
+      const uploaded = await Promise.all(chunk.map((c) => uploadOne(c)))
+      result.accepted.push(...uploaded)
     }
 
     if (event.status === 'DRAFT' && result.accepted.length > 0) {
