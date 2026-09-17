@@ -1,5 +1,8 @@
 {
   "buildCommand": "npm run build -w @neoteric-memories/shared && npm run build -w @neoteric-memories/web",
   "outputDirectory": "apps/web/dist",
-  "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }]
+  "rewrites": [
+    { "source": "/api/:path*", "destination": "https://neoteric-memories-backend.vercel.app/api/:path*" },
+    { "source": "/(.*)", "destination": "/index.html" }
+  ]
 }
