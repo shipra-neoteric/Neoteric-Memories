@@ -21,7 +21,12 @@ export const adminLoginLimiter = rateLimit({
 
 export const adminApiLimiter = rateLimit({
   windowMs: 60 * 1000,
-  limit: env.NODE_ENV === 'test' ? 10000 : 120,
+  // Covers every /api/admin/* call for the signed-in admin's IP, including the
+  // event page's own parallel photo-job draining (DRAIN_CONCURRENCY lanes in
+  // EventDetailPage.tsx) alongside its background polling — bumped from 120 so a
+  // single large batch doesn't exhaust the budget for the rest of the admin UI.
+  limit: env.NODE_ENV === 'test' ? 10000 : 300,
   standardHeaders: true,
   legacyHeaders: false,
+  message: { error: { code: 'RATE_LIMITED', message: 'Too many admin requests. Please wait a moment and try again.' } },
 })
