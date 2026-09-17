@@ -155,10 +155,11 @@ export async function processAcceptedFiles(
   eventId: string,
   accepted: ClassifiedFile[],
   actor: { id: string; role: string }
-): Promise<{ accepted: { photoId: string; filename: string }[]; failed: { filename: string; reason: string }[] }> {
-  const result: { accepted: { photoId: string; filename: string }[]; failed: { filename: string; reason: string }[] } = {
+): Promise<{ accepted: { photoId: string; filename: string }[]; failed: { filename: string; reason: string }[]; batchId: string | null }> {
+  const result: { accepted: { photoId: string; filename: string }[]; failed: { filename: string; reason: string }[]; batchId: string | null } = {
     accepted: [],
     failed: [],
+    batchId: null,
   }
   if (accepted.length === 0) return result
 
@@ -171,6 +172,7 @@ export async function processAcceptedFiles(
     const batch = await prisma.photoBatch.create({
       data: { eventId, uploadedById: actor.id, status: 'PROCESSING', totalCount: accepted.length },
     })
+    result.batchId = batch.id
 
     const storage = getStorageProvider()
 
@@ -220,10 +222,14 @@ export async function processAcceptedFiles(
       }
       await cleanupTempFile(file)
 
+      // eventId/batchId are carried in the payload (not just derivable by looking the
+      // photo back up) so an admin-scoped claim — see jobs/loop.ts's
+      // claimAndRunScopedJob, used by POST /api/admin/jobs/process-next — can filter
+      // to "jobs for this upload batch" without an extra DB round trip per candidate.
       if (isHeic) {
-        await enqueueJob('PHOTO_HEIC_CONVERT', { photoId: photo.id }, `heic-convert:${photo.id}`)
+        await enqueueJob('PHOTO_HEIC_CONVERT', { photoId: photo.id, eventId, batchId: batch.id }, `heic-convert:${photo.id}`)
       } else {
-        await enqueueJob('PHOTO_PROCESS', { photoId: photo.id }, `photo-process:${photo.id}`)
+        await enqueueJob('PHOTO_PROCESS', { photoId: photo.id, eventId, batchId: batch.id }, `photo-process:${photo.id}`)
       }
       return { photoId: photo.id, filename: file.originalFilename }
     }
@@ -319,7 +325,11 @@ export async function retryPhotoProcessing(photoId: string, actor: { id: string;
   const photo = await prisma.photo.findUnique({ where: { id: photoId } })
   if (!photo || photo.deletedAt) throw new Error('Photo not found')
   await prisma.photo.update({ where: { id: photoId }, data: { status: 'PENDING', processingError: null } })
-  await enqueueJob('PHOTO_PROCESS', { photoId }, `photo-process:${photoId}:retry:${Date.now()}`)
+  await enqueueJob(
+    'PHOTO_PROCESS',
+    { photoId, eventId: photo.eventId, batchId: photo.batchId ?? undefined },
+    `photo-process:${photoId}:retry:${Date.now()}`
+  )
   await writeAuditLog({ actorId: actor.id, actorRole: actor.role, action: 'photo.retry', entityType: 'Photo', entityId: photoId, eventId: photo.eventId })
 }
 

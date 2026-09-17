@@ -24,7 +24,10 @@ export async function dispatchJob(type: BackgroundJobType, payload: any): Promis
       await runRetentionSweep()
       return
     case 'DRIVE_SYNC':
-      await runDriveSyncSweep()
+      // payload.eventId scopes this to one integration ("Sync Now" — see
+      // modules/drive/router.ts); absent for the periodic sweep (all ACTIVE
+      // integrations — see jobs/loop.ts's enqueueDueScheduledJobs).
+      await runDriveSyncSweep(payload?.eventId)
       return
   }
 }

@@ -22,6 +22,7 @@ import { reportsRouter } from './modules/reports/router.js'
 import { guestRouter } from './modules/guest/router.js'
 import { filesRouter } from './modules/files/router.js'
 import { driveRouter } from './modules/drive/router.js'
+import { jobsRouter } from './modules/jobs/router.js'
 import { driveCallbackRouter } from './modules/drive/callbackRouter.js'
 
 export function createApp() {
@@ -52,19 +53,26 @@ export function createApp() {
   // deployment (see api/index.js) has no such process, so an external scheduler
   // hits this route periodically instead (see docs/DEPLOYMENT.md for setup). No
   // admin session involved, so this intentionally sits outside requireAuth/requireCsrf
-  // — CRON_SECRET is the only gate. Bounded well under a tight serverless execution
-  // time limit (e.g. Vercel Hobby's 10s cap) so a single invocation can't run past it
-  // mid-job — 5s, not closer to 10s, because establishing the MongoDB connection
-  // itself (connectDatabase(), called before this route ever runs — see
-  // api/index.js) is not part of this budget and can itself take several seconds on
-  // a cold serverless start. runJobsOnce() itself recovers any job a previous
-  // invocation left stuck RUNNING from exactly this happening.
+  // — CRON_SECRET is the only gate, accepted two ways: a `?secret=` query param (the
+  // GitHub Actions recovery workflow — see .github/workflows/backend-cron.yml, hits
+  // this every 5 minutes as a free backstop since Vercel's own Cron Jobs are capped
+  // at once/day on the Hobby plan) or an `Authorization: Bearer` header (Vercel's own
+  // native Cron Jobs — see vercel.json's `crons` entry, a once/day retention-focused
+  // trigger; Vercel automatically attaches this header using the project's own
+  // CRON_SECRET env var, so no secret needs to be embedded in vercel.json itself).
+  // Bounded well under this function's configured maxDuration (see vercel.json) so a
+  // single invocation can't run past it mid-job — 5s, not closer to the limit,
+  // because establishing the MongoDB connection itself (connectDatabase(), called
+  // before this route ever runs — see api/index.js) is not part of this budget and
+  // can itself take several seconds on a cold serverless start. runJobsOnce() itself
+  // recovers any job a previous invocation left stuck RUNNING from exactly this
+  // happening.
   app.get(
     '/internal/cron',
     asyncHandler(async (req, res) => {
-      if (!env.CRON_SECRET || req.query.secret !== env.CRON_SECRET) {
-        throw Errors.unauthorized('Invalid or missing cron secret')
-      }
+      const bearerToken = req.header('authorization')?.replace(/^Bearer\s+/i, '')
+      const authorized = !!env.CRON_SECRET && (req.query.secret === env.CRON_SECRET || bearerToken === env.CRON_SECRET)
+      if (!authorized) throw Errors.unauthorized('Invalid or missing cron secret')
       const summary = await runJobsOnce(5000)
       res.json({ ok: true, ...summary })
     })
@@ -82,6 +90,7 @@ export function createApp() {
   admin.use('/events', eventsRouter)
   admin.use('/events/:id/photos', photosRouter)
   admin.use('/events/:id/drive', driveRouter)
+  admin.use('/events/:id/jobs', jobsRouter)
   admin.use('/integrations/google', driveCallbackRouter)
   admin.use('/consent-versions', consentRouter)
   admin.use('/retention-policies', retentionRouter)

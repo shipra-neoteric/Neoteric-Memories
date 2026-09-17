@@ -23,7 +23,7 @@ import { finalizeBatchIfDone } from './photoProcess.js'
  * persistent worker loop or a periodic /internal/cron hit — does the slow part on
  * its own schedule with no request waiting on it.
  */
-export async function processHeicConvert(payload: { photoId: string }): Promise<void> {
+export async function processHeicConvert(payload: { photoId: string; eventId?: string; batchId?: string }): Promise<void> {
   const prisma = getPrisma()
   const photo = await prisma.photo.findUnique({ where: { id: payload.photoId } })
   if (!photo || photo.deletedAt) return // Photo deleted before conversion ran — nothing to do (idempotent no-op).
@@ -54,7 +54,7 @@ export async function processHeicConvert(payload: { photoId: string }): Promise<
       data: { originalKey: finalKey, mimeType: 'image/jpeg', sizeBytes: converted.length, processingError: null },
     })
 
-    await enqueueJob('PHOTO_PROCESS', { photoId: photo.id }, `photo-process:${photo.id}`)
+    await enqueueJob('PHOTO_PROCESS', { photoId: photo.id, eventId: photo.eventId, batchId: photo.batchId ?? undefined }, `photo-process:${photo.id}`)
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     logger.error({ photoId: photo.id, eventId: photo.eventId }, `HEIC conversion failed: ${message}`)

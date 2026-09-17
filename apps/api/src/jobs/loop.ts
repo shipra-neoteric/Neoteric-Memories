@@ -1,3 +1,4 @@
+import type { BackgroundJobType } from '@neoteric-memories/shared'
 import { getPrisma } from '../db.js'
 import { env } from '../env.js'
 import { logger } from '../lib/logger.js'
@@ -26,7 +27,7 @@ let driveSyncHandle: ReturnType<typeof setInterval> | undefined
  * instead of sitting abandoned forever. See the threshold's own doc comment for why
  * this matters specifically for runJobsOnce()'s serverless callers.
  */
-async function recoverStaleJobs(): Promise<void> {
+export async function recoverStaleJobs(): Promise<void> {
   const prisma = getPrisma()
   const stale = await prisma.backgroundJob.findMany({
     where: { status: 'RUNNING', updatedAt: { lt: new Date(Date.now() - STALE_RUNNING_THRESHOLD_MS) } },
@@ -67,8 +68,8 @@ async function enqueueDueScheduledJobs(): Promise<void> {
  * external scheduler on a serverless deployment (api/index.js) that has no
  * setInterval-based startWorkerLoop() of its own. Claims and processes jobs
  * one at a time until either the queue is empty or budgetMs has elapsed, leaving
- * enough headroom for the caller's own function execution limit (e.g. Vercel's
- * Hobby-plan 10s cap) to not get hit mid-job.
+ * enough headroom for the caller's own function execution limit to not get hit
+ * mid-job.
  */
 export async function runJobsOnce(budgetMs: number): Promise<{ processed: number; elapsedMs: number }> {
   const start = Date.now()
@@ -82,6 +83,40 @@ export async function runJobsOnce(budgetMs: number): Promise<{ processed: number
     processed += 1
   }
   return { processed, elapsedMs: Date.now() - start }
+}
+
+interface RunOutcome {
+  outcome: 'succeeded' | 'failed' | 'retrying'
+  errorMessage?: string
+}
+
+/** Runs an already-claimed (status RUNNING) job to completion, applying the same success/retry/permanent-failure bookkeeping regardless of how it was claimed (the global sweep or a scoped admin-triggered claim). */
+async function runClaimedJob(candidate: { id: string; type: BackgroundJobType; payload: unknown; attempts: number; maxAttempts: number }): Promise<RunOutcome> {
+  const prisma = getPrisma()
+  logger.info({ jobId: candidate.id, type: candidate.type, payload: candidate.payload }, 'Claimed job')
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await dispatchJob(candidate.type, candidate.payload as any)
+    await prisma.backgroundJob.update({ where: { id: candidate.id }, data: { status: 'SUCCEEDED' } })
+    return { outcome: 'succeeded' }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    const fresh = await prisma.backgroundJob.findUnique({ where: { id: candidate.id } })
+    const attempts = fresh?.attempts ?? candidate.attempts + 1
+    const maxAttempts = fresh?.maxAttempts ?? candidate.maxAttempts
+    if (attempts >= maxAttempts) {
+      logger.error({ jobId: candidate.id, type: candidate.type, attempts }, `Job permanently failed: ${message}`)
+      await prisma.backgroundJob.update({ where: { id: candidate.id }, data: { status: 'FAILED', lastError: message } })
+      return { outcome: 'failed', errorMessage: message }
+    }
+    const backoff = BACKOFF_BASE_MS * 2 ** (attempts - 1)
+    logger.warn({ jobId: candidate.id, type: candidate.type, attempts, backoff }, `Job failed, will retry: ${message}`)
+    await prisma.backgroundJob.update({
+      where: { id: candidate.id },
+      data: { status: 'QUEUED', lastError: message, runAfter: new Date(Date.now() + backoff) },
+    })
+    return { outcome: 'retrying', errorMessage: message }
+  }
 }
 
 export async function claimNextJob(): Promise<boolean> {
@@ -99,27 +134,102 @@ export async function claimNextJob(): Promise<boolean> {
   })
   if (claimed.count !== 1) return false
 
-  try {
-    await dispatchJob(candidate.type, candidate.payload)
-    await prisma.backgroundJob.update({ where: { id: candidate.id }, data: { status: 'SUCCEEDED' } })
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
-    const fresh = await prisma.backgroundJob.findUnique({ where: { id: candidate.id } })
-    const attempts = fresh?.attempts ?? candidate.attempts + 1
-    const maxAttempts = fresh?.maxAttempts ?? candidate.maxAttempts
-    if (attempts >= maxAttempts) {
-      logger.error({ jobId: candidate.id, type: candidate.type, attempts }, `Job permanently failed: ${message}`)
-      await prisma.backgroundJob.update({ where: { id: candidate.id }, data: { status: 'FAILED', lastError: message } })
-    } else {
-      const backoff = BACKOFF_BASE_MS * 2 ** (attempts - 1)
-      logger.warn({ jobId: candidate.id, type: candidate.type, attempts, backoff }, `Job failed, will retry: ${message}`)
-      await prisma.backgroundJob.update({
-        where: { id: candidate.id },
-        data: { status: 'QUEUED', lastError: message, runAfter: new Date(Date.now() + backoff) },
-      })
-    }
-  }
+  await runClaimedJob(candidate)
   return true
+}
+
+// How many QUEUED candidates a scoped claim is willing to scan (oldest-first) looking
+// for one matching the requested scope, before giving up. Payload is untyped JSON —
+// filtering by eventId/batchId happens in application code rather than a DB-level JSON
+// query, since Prisma's JSON filtering support varies by connector and this avoids
+// depending on it. Bounded so a huge unrelated backlog can't make a scoped claim scan
+// unboundedly; a caller whose job hasn't been reached within this window will see
+// nothing to claim yet and can just ask again shortly.
+const SCOPED_CLAIM_SCAN_LIMIT = 100
+
+export interface ScopedClaimFilter {
+  types: BackgroundJobType[]
+  // Every key here must match exactly in a candidate job's payload for it to be
+  // eligible — e.g. { eventId } for "any photo job for this event", { eventId,
+  // batchId } for "just this upload batch", or { downloadJobId } for a guest's own
+  // ZIP job. Whatever fields aren't relevant to a given job type just won't be
+  // present in its payload and therefore never match a filter that includes them,
+  // which is exactly the desired behavior (never cross-match unrelated job shapes).
+  match: Record<string, string>
+}
+
+export interface ScopedJobResult {
+  processed: boolean
+  jobId?: string
+  jobType?: BackgroundJobType
+  result: 'completed' | 'failed' | 'nothing_to_process'
+  errorMessage?: string
+  remainingForBatch: number
+}
+
+function payloadMatchesScope(payload: unknown, filter: ScopedClaimFilter): boolean {
+  if (typeof payload !== 'object' || payload === null) return false
+  const p = payload as Record<string, unknown>
+  return Object.entries(filter.match).every(([key, value]) => p[key] === value)
+}
+
+/**
+ * Claims and runs AT MOST ONE job matching the given scope (job type(s) + exact
+ * payload field matches) — the primitive behind POST /api/admin/jobs/process-next
+ * (see modules/jobs/router.ts), the Drive "Sync Now" flow, and a guest's own ZIP
+ * download trigger. Scoping is deliberate: an admin processing their own upload batch
+ * or Drive sync, or a guest waiting on their own ZIP, must never accidentally claim
+ * and run an unrelated job (another event's photos, a system-wide RETENTION_SWEEP,
+ * another admin's Drive sync, another guest's download) just because it happened to
+ * be next in the global queue. Concurrent calls (e.g. a double-click, or two browser
+ * tabs) never process the same job twice — claiming uses the same optimistic
+ * status-flip-if-still-QUEUED pattern as claimNextJob().
+ */
+export async function claimAndRunScopedJob(filter: ScopedClaimFilter): Promise<ScopedJobResult> {
+  const prisma = getPrisma()
+  const candidates = await prisma.backgroundJob.findMany({
+    where: { status: 'QUEUED', runAfter: { lte: new Date() }, type: { in: filter.types } },
+    orderBy: { runAfter: 'asc' },
+    take: SCOPED_CLAIM_SCAN_LIMIT,
+  })
+
+  let claimedJob: (typeof candidates)[number] | undefined
+  for (const candidate of candidates) {
+    if (!payloadMatchesScope(candidate.payload, filter)) continue
+    const claimed = await prisma.backgroundJob.updateMany({
+      where: { id: candidate.id, status: 'QUEUED' },
+      data: { status: 'RUNNING', attempts: { increment: 1 } },
+    })
+    if (claimed.count === 1) {
+      claimedJob = candidate
+      break
+    }
+    // Someone else (another request, another tab) claimed it first — keep scanning.
+  }
+
+  const countRemaining = async () => {
+    const remaining = await prisma.backgroundJob.findMany({
+      where: { status: { in: ['QUEUED', 'RUNNING'] }, type: { in: filter.types } },
+      select: { payload: true },
+      take: SCOPED_CLAIM_SCAN_LIMIT,
+    })
+    return remaining.filter((r) => payloadMatchesScope(r.payload, filter)).length
+  }
+
+  if (!claimedJob) {
+    return { processed: false, result: 'nothing_to_process', remainingForBatch: await countRemaining() }
+  }
+
+  const run = await runClaimedJob(claimedJob)
+  const remainingForBatch = await countRemaining()
+  return {
+    processed: true,
+    jobId: claimedJob.id,
+    jobType: claimedJob.type,
+    result: run.outcome === 'succeeded' ? 'completed' : 'failed',
+    errorMessage: run.errorMessage,
+    remainingForBatch,
+  }
 }
 
 export function startWorkerLoop(): void {
