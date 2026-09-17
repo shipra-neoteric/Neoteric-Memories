@@ -1,8 +1,57 @@
-# Deployment — Vercel (frontend) + Render (backend) + MongoDB Atlas
+# Deployment — Vercel (frontend + API) + MongoDB Atlas + AWS S3
 
-This is the exact path chosen for Neoteric Memories: static frontend on Vercel, API + worker on Render as one service, database on MongoDB Atlas. All three have a free/low-cost tier sufficient for a pilot event.
+## Current architecture: fully free/serverless, Render is optional
 
-**Config files already in the repo**: `render.yaml` (Render Blueprint), `vercel.json` (build + SPA routing). You mostly need to create accounts and paste in values — not write config.
+As of this section being written, the live deployment runs **entirely on free tiers with
+no always-on paid service required**: both the frontend and the API are Vercel
+serverless functions (`apps/web` static build + `apps/api/api/index.js`), the database
+is MongoDB Atlas's free M0 tier, and file storage is AWS S3. Background job processing
+(photo/HEIC processing, Drive sync, ZIP generation, retention) does **not** need a
+persistent worker process — see `docs/JOB_PROCESSING.md` for exactly how that works.
+Render's role is now **optional**, not required:
+
+- **Manual uploads** process immediately: `POST .../photos/finalize` is followed by the
+  admin page calling `POST .../jobs/process-next` in a loop until the batch is done —
+  see `apps/web/src/pages/admin/EventDetailPage.tsx`'s `drainPhotoJobs`.
+- **"Sync Now"** (Drive) and a guest's ZIP download button trigger their own job
+  immediately the same way — no polling wait needed for an admin-/guest-initiated
+  action.
+- **Delayed/interrupted jobs** (a closed browser tab mid-batch, a Vercel cold-start
+  hiccup) are recovered by a free GitHub Actions workflow
+  (`.github/workflows/backend-cron.yml`) hitting `GET /internal/cron` every 5 minutes —
+  this is a backstop, not a promise of prompt timing (GitHub's schedule trigger can run
+  meaningfully late under platform load).
+- **Retention cleanup** runs once daily via Vercel's own native Cron Jobs (`vercel.json`'s
+  `crons` entry — the Hobby plan allows exactly this, once/day, which is all retention
+  needs) — no external scheduler required for that piece.
+- **Session/access-window expiry** is enforced at request time regardless of whether any
+  cleanup job has run yet (see `apps/api/src/modules/guest/session.ts`'s
+  `requireActiveSession`) — an expired guest session is rejected immediately, it never
+  depends on the retention sweep's timing.
+
+**If you still want Render** (e.g. you'd rather have near-instant job processing via a
+persistent worker instead of the process-next/recovery-cron combination above), the
+sections below still work — `render.yaml` now deploys a **worker-only** service
+(`node apps/api/dist/jobs/worker.js`), since the HTTP API itself moved to Vercel. Running
+both at once is safe (the job queue's optimistic claiming means Render and Vercel's own
+triggers never double-process the same job) and is a reasonable way to verify the new
+setup actually works before deciding whether to keep Render at all.
+
+**Before suspending/deleting the Render service**: verify, against your real production
+data, that (1) a manual photo upload finishes processing without you doing anything else,
+(2) "Sync Now" completes and imports photos, (3) a guest selfie search + ZIP download
+works end to end, (4) the GitHub Actions workflow's last run succeeded (Actions tab), and
+(5) the daily retention cron has run at least once (Vercel dashboard → your backend
+project → Cron Jobs) or `POST /api/admin/retention-policies/run-now` works manually.
+Nothing in this repository suspends or deletes the Render service automatically — that's
+a manual step you take once you're confident, not something any script here will do for
+you.
+
+---
+
+This is the original path chosen for Neoteric Memories: static frontend on Vercel, API + worker on Render as one service, database on MongoDB Atlas. All three have a free/low-cost tier sufficient for a pilot event. Kept below as a still-valid option — see the section above for the current default (no Render needed at all).
+
+**Config files already in the repo**: `render.yaml` (Render Blueprint, now worker-only), `vercel.json` (build + SPA routing + the API's own serverless function config). You mostly need to create accounts and paste in values — not write config.
 
 ## 1. MongoDB Atlas (do this first — everything else needs the connection string)
 

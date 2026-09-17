@@ -1,13 +1,19 @@
-# Render Blueprint — deploys ONLY the background worker (job queue processor +
-# Drive sync/retention schedulers, see apps/api/src/jobs/worker.ts). The HTTP API
-# itself runs on Vercel as a serverless function (see apps/api/api/index.js +
-# apps/api/vercel.json) — that deployment deliberately does NOT run this worker loop
-# (a serverless invocation ends shortly after it responds, so a setInterval-based
-# loop there wouldn't keep running between requests), which is exactly why this
-# service exists: something needs to keep polling the job queue continuously, and a
-# persistent Render process does that far more promptly (~2s) than Vercel's
-# workaround of an external scheduler hitting GET /internal/cron every few minutes
-# (see .github/workflows/backend-cron.yml) ever can.
+# Render Blueprint — OPTIONAL. The rest of this app runs entirely on free tiers
+# without this: the HTTP API is a Vercel serverless function
+# (apps/api/api/index.js), and background jobs (photo processing, Drive sync, ZIP
+# generation, retention) process via admin-/guest-triggered immediate processing +
+# a free GitHub Actions recovery cron + a once-daily Vercel native Cron Job for
+# retention — see docs/JOB_PROCESSING.md for exactly how, and docs/DEPLOYMENT.md's
+# "Current architecture" section for the full picture including what to verify
+# before deciding you don't need this at all.
+#
+# Still useful if you'd rather have a persistent worker (~2s job-processing latency,
+# no bounded-per-run limits) instead of relying on the mechanisms above — deploys
+# ONLY the background worker (job queue processor + Drive sync/retention
+# schedulers, see apps/api/src/jobs/worker.ts). Running this alongside the
+# mechanisms above is safe (the job queue's optimistic claiming means they never
+# double-process the same job) — a reasonable way to have both while you verify the
+# serverless-only path actually works for you.
 #
 # Import this repo at https://dashboard.render.com/blueprints and Render will read
 # this file automatically, or create the service manually using the same
