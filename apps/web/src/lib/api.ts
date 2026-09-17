@@ -7,11 +7,13 @@ export class ApiError extends Error {
   status: number
   code: string
   details?: unknown
-  constructor(status: number, code: string, message: string, details?: unknown) {
+  retryAfterMs?: number
+  constructor(status: number, code: string, message: string, details?: unknown, retryAfterMs?: number) {
     super(message)
     this.status = status
     this.code = code
     this.details = details
+    this.retryAfterMs = retryAfterMs
   }
 }
 
@@ -84,7 +86,10 @@ export async function apiFetch<T = unknown>(
 
   if (!res.ok) {
     const err = payload?.error
-    throw new ApiError(res.status, err?.code ?? 'UNKNOWN', err?.message ?? `Request failed with status ${res.status}`, err?.details)
+    // express-rate-limit's 429 sends Retry-After in seconds (standardHeaders: true).
+    const retryAfterHeader = Number(res.headers.get('Retry-After'))
+    const retryAfterMs = res.status === 429 && Number.isFinite(retryAfterHeader) ? retryAfterHeader * 1000 : undefined
+    throw new ApiError(res.status, err?.code ?? 'UNKNOWN', err?.message ?? `Request failed with status ${res.status}`, err?.details, retryAfterMs)
   }
   return payload as T
 }

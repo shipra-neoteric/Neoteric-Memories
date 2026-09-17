@@ -144,16 +144,41 @@ export function EventDetailPage() {
   const drainPhotoJobs = async (batchId?: string) => {
     setIsDraining(true)
     const attemptsUsed = { count: 0 }
+    // adminApiLimiter caps the whole /api/admin surface per IP (see rateLimit.ts) —
+    // several lanes firing at once can burn through that budget in seconds. Rather
+    // than each lane hammering independently until it individually 429s, they share
+    // this pause point: the first lane to get rate-limited makes every lane wait out
+    // the server's Retry-After before any of them calls again.
+    const pausedUntil = { at: 0 }
     const runLane = async () => {
       while (attemptsUsed.count < MAX_DRAIN_ATTEMPTS) {
+        const waitMs = pausedUntil.at - Date.now()
+        if (waitMs > 0) {
+          await new Promise((resolve) => setTimeout(resolve, waitMs))
+          continue
+        }
+
         attemptsUsed.count += 1
-        const res = await apiFetch<{
+        let res: {
           processed: boolean
           jobId?: string
           jobType?: string
           remainingForBatch?: number
           result?: 'completed' | 'failed' | 'nothing_to_process'
-        }>(`/api/admin/events/${eventId}/jobs/process-next`, { method: 'POST', body: batchId ? { batchId } : {} })
+        }
+        try {
+          res = await apiFetch<typeof res>(`/api/admin/events/${eventId}/jobs/process-next`, {
+            method: 'POST',
+            body: batchId ? { batchId } : {},
+          })
+        } catch (err) {
+          if (err instanceof ApiError && err.status === 429) {
+            attemptsUsed.count -= 1 // a rate-limit pause shouldn't cost this lane an attempt
+            pausedUntil.at = Math.max(pausedUntil.at, Date.now() + (err.retryAfterMs ?? 5000))
+            continue
+          }
+          throw err
+        }
 
         queryClient.invalidateQueries({ queryKey: ['event-photos', eventId] })
         if (!res.processed) return // nothing left for this lane to claim right now
