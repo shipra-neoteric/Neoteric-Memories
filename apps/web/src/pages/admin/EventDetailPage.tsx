@@ -62,6 +62,7 @@ interface Photo {
   status: string
   faceCount: number
   hasQualityWarning: boolean
+  processingError?: string | null
 }
 
 interface ConsentVersion {
@@ -117,6 +118,46 @@ export function EventDetailPage() {
     queryClient.invalidateQueries({ queryKey: ['event', eventId] })
     queryClient.invalidateQueries({ queryKey: ['event-photos', eventId] })
   }
+
+  // Drives photo processing forward without an always-on worker: on a serverless
+  // deployment nothing is continuously polling the job queue on its own (see
+  // apps/api/api/index.js's own doc comment), so after an upload finishes, this admin
+  // page itself calls POST .../jobs/process-next once per still-queued job,
+  // sequentially (never more than one in flight — a second call only ever starts
+  // after the previous one's response), until the batch is done. Bounded by
+  // MAX_DRAIN_ATTEMPTS so a single browser tab can't loop forever if something's
+  // stuck — the GitHub Actions recovery cron (backend-cron.yml) and the "Resume
+  // processing" button (shown whenever photos are still PENDING/PROCESSING, computed
+  // straight from the polled photo list, so it survives a refresh without needing to
+  // remember which batch was in progress) both exist to pick up from wherever this
+  // loop left off.
+  const MAX_DRAIN_ATTEMPTS = 80
+  const [isDraining, setIsDraining] = useState(false)
+
+  const drainPhotoJobs = async (batchId?: string) => {
+    setIsDraining(true)
+    try {
+      for (let attempt = 0; attempt < MAX_DRAIN_ATTEMPTS; attempt++) {
+        const res = await apiFetch<{
+          processed: boolean
+          jobId?: string
+          jobType?: string
+          remainingForBatch?: number
+          result?: 'completed' | 'failed' | 'nothing_to_process'
+        }>(`/api/admin/events/${eventId}/jobs/process-next`, { method: 'POST', body: batchId ? { batchId } : {} })
+
+        queryClient.invalidateQueries({ queryKey: ['event-photos', eventId] })
+        if (!res.processed || (res.remainingForBatch ?? 0) === 0) break
+      }
+    } catch (err) {
+      toastError(err instanceof ApiError ? err.message : 'Photo processing was interrupted — use "Resume processing" to continue')
+    } finally {
+      setIsDraining(false)
+      invalidate()
+    }
+  }
+
+  const pendingPhotoCount = (photosData?.photos ?? []).filter((p) => p.status === 'PENDING' || p.status === 'PROCESSING').length
 
   const updateEvent = useMutation({
     mutationFn: (body: Record<string, unknown>) => apiFetch(`/api/admin/events/${eventId}`, { method: 'PATCH', body }),
@@ -194,25 +235,31 @@ export function EventDetailPage() {
         throw new ApiError(0, 'UPLOAD_FAILED', 'None of the selected files could be uploaded. Check your connection and try again.')
       }
 
-      const result = await apiFetch<{ accepted: unknown[]; duplicates: unknown[]; rejected: { filename: string; reason: string }[] }>(
-        `/api/admin/events/${eventId}/photos/finalize`,
-        { method: 'POST', body: { files: uploaded } }
-      )
+      const result = await apiFetch<{
+        accepted: { photoId: string; filename: string }[]
+        duplicates: unknown[]
+        rejected: { filename: string; reason: string }[]
+        batchId: string | null
+      }>(`/api/admin/events/${eventId}/photos/finalize`, { method: 'POST', body: { files: uploaded } })
       return { ...result, uploadFailures }
     },
     onSuccess: (res) => {
-      if (res.accepted.length) toastSuccess(`${res.accepted.length} photo(s) uploaded and queued for processing`)
+      if (res.accepted.length) toastSuccess(`${res.accepted.length} photo(s) uploaded — processing now`)
       if (res.duplicates.length) toastError(`${res.duplicates.length} file(s) skipped as duplicates`)
       if (res.rejected.length) toastError(`${res.rejected.length} file(s) rejected: ${res.rejected[0].reason}`)
       if (res.uploadFailures > 0) toastError(`${res.uploadFailures} file(s) failed to upload — try again`)
       invalidate()
+      if (res.accepted.length > 0) void drainPhotoJobs(res.batchId ?? undefined)
     },
     onError: (err) => toastError(err instanceof ApiError ? err.message : 'Upload failed'),
   })
 
   const retryPhoto = useMutation({
     mutationFn: (photoId: string) => apiFetch(`/api/admin/events/${eventId}/photos/${photoId}/retry`, { method: 'POST' }),
-    onSuccess: () => invalidate(),
+    onSuccess: () => {
+      invalidate()
+      void drainPhotoJobs()
+    },
   })
 
   const deletePhoto = useMutation({
@@ -369,12 +416,28 @@ export function EventDetailPage() {
                 }}
               />
             </div>
-            <div className="flex flex-wrap gap-2 mb-4">
+            <div className="flex flex-wrap items-center gap-2 mb-4">
               {data.photoStats.map((s) => (
                 <span key={s.status} className={`px-2.5 py-1 rounded-full text-xs font-medium ${PHOTO_STATUS_BADGE[s.status] ?? 'bg-gray-100 text-gray-600'}`}>
                   {s.status}: {s._count}
                 </span>
               ))}
+              {isDraining && (
+                <span className="text-xs text-gray-400 flex items-center gap-1.5">
+                  <RefreshCw className="w-3 h-3 animate-spin" /> Processing…
+                </span>
+              )}
+              {!isDraining && pendingPhotoCount > 0 && (
+                // Shown whenever the poll picks up PENDING/PROCESSING photos with no
+                // drain loop currently running for them — covers a page refresh
+                // mid-batch, a closed tab, or the bounded drain loop above having
+                // given up after MAX_DRAIN_ATTEMPTS. Deliberately reads server state
+                // (the photo list) rather than any client-side "was I uploading"
+                // flag, so it works correctly no matter how the page got here.
+                <Button variant="secondary" className="!py-1 !px-2.5 text-xs" icon={<RefreshCw className="w-3 h-3" />} onClick={() => void drainPhotoJobs()}>
+                  Resume processing ({pendingPhotoCount})
+                </Button>
+              )}
             </div>
             {!photosData?.photos.length ? (
               <div className="text-center py-10 text-sm text-gray-400">
@@ -393,6 +456,9 @@ export function EventDetailPage() {
                       <span className="text-[10px] text-gray-400">{p.faceCount} face(s)</span>
                     </div>
                     {p.hasQualityWarning && <p className="text-[10px] text-amber-600 mt-1 flex items-center gap-1"><AlertTriangle className="w-3 h-3" /> Low quality</p>}
+                    {p.status === 'FAILED' && p.processingError && (
+                      <p className="text-[10px] text-red-500 mt-1 line-clamp-2" title={p.processingError}>{p.processingError}</p>
+                    )}
                     <div className="flex gap-1 mt-2">
                       {p.status === 'FAILED' && (
                         <button onClick={() => retryPhoto.mutate(p.id)} className="text-[11px] flex items-center gap-1 text-blue-600 hover:underline">
@@ -476,7 +542,7 @@ export function EventDetailPage() {
             />
           </Card>
 
-          <DriveIntegrationCard eventId={eventId} />
+          <DriveIntegrationCard eventId={eventId} onPhotosImported={() => void drainPhotoJobs()} />
 
           <Card className="p-5">
             <SectionTitle icon={CheckCircle2}>Face index status</SectionTitle>
@@ -543,9 +609,10 @@ interface DriveIntegration {
   importedCount: number
 }
 
-function DriveIntegrationCard({ eventId }: { eventId: string }) {
+function DriveIntegrationCard({ eventId, onPhotosImported }: { eventId: string; onPhotosImported: () => void }) {
   const queryClient = useQueryClient()
   const [folderInput, setFolderInput] = useState('')
+  const [isSyncing, setIsSyncing] = useState(false)
 
   const { data, isLoading } = useQuery({
     queryKey: ['drive-integration', eventId],
@@ -573,22 +640,42 @@ function DriveIntegrationCard({ eventId }: { eventId: string }) {
     onError: (err) => toastError(err instanceof ApiError ? err.message : 'Could not connect that folder'),
   })
 
-  const syncNow = useMutation({
-    // The server responds immediately (202) and syncs in the background — a folder
-    // with a lot of files can take minutes, far too long to hold an HTTP request
-    // open for. The existing 15s polling on the integration query (below) picks up
-    // lastSyncSummary/importedCount once the sync actually finishes.
-    mutationFn: () => apiFetch<{ status: 'started' }>(`/api/admin/events/${eventId}/drive/sync-now`, { method: 'POST' }),
-    onSuccess: () => {
-      toastSuccess('Sync started — this can take a few minutes for a large folder. The card below will update automatically.')
+  // Enqueues and immediately processes one bounded chunk of the Drive folder
+  // (MAX_FILES_PER_SYNC_RUN files — see modules/drive/service.ts) per call, entirely
+  // within this one request/response — no background/202 response needed, since a
+  // single chunk is small enough to stay well under a reasonable request time. A
+  // folder with more new files than fit in one chunk says so in lastSyncSummary ("N
+  // more queued for the next sync"); this loop keeps calling sync-now, bounded by
+  // MAX_SYNC_ATTEMPTS, until that phrase is gone — the manual-click equivalent of
+  // what the periodic GitHub Actions recovery cron would otherwise take several
+  // 5-minute ticks to work through on its own.
+  const MAX_SYNC_ATTEMPTS = 20
+  const runSyncNow = async () => {
+    setIsSyncing(true)
+    try {
+      let importedAny = false
+      for (let attempt = 0; attempt < MAX_SYNC_ATTEMPTS; attempt++) {
+        const res = await apiFetch<{
+          processed: boolean
+          result?: 'completed' | 'failed' | 'nothing_to_process'
+          integration: DriveIntegration | null
+        }>(`/api/admin/events/${eventId}/drive/sync-now`, { method: 'POST' })
+
+        queryClient.setQueryData(['drive-integration', eventId], (prev: { enabled: boolean; integration: DriveIntegration | null } | undefined) =>
+          prev ? { ...prev, integration: res.integration } : prev
+        )
+        if (res.processed && res.result === 'completed') importedAny = true
+        if (!res.processed || !res.integration?.lastSyncSummary?.includes('more queued')) break
+      }
+      if (importedAny) onPhotosImported()
+      toastSuccess('Drive sync finished — see the summary below.')
+    } catch (err) {
+      toastError(err instanceof ApiError ? err.message : 'Could not run the sync')
+    } finally {
+      setIsSyncing(false)
       invalidate()
-      setTimeout(() => {
-        invalidate()
-        queryClient.invalidateQueries({ queryKey: ['event-photos', eventId] })
-      }, 8000)
-    },
-    onError: (err) => toastError(err instanceof ApiError ? err.message : 'Could not start the sync'),
-  })
+    }
+  }
 
   const togglePause = useMutation({
     mutationFn: (resume: boolean) => apiFetch(`/api/admin/events/${eventId}/drive/${resume ? 'resume' : 'pause'}`, { method: 'POST' }),
@@ -667,8 +754,8 @@ function DriveIntegrationCard({ eventId }: { eventId: string }) {
                 )}
               </div>
               <div className="flex flex-wrap gap-2">
-                <Button variant="secondary" icon={<RefreshCw className="w-3.5 h-3.5" />} loading={syncNow.isPending} onClick={() => syncNow.mutate()}>
-                  Sync now
+                <Button variant="secondary" icon={<RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />} loading={isSyncing} onClick={() => void runSyncNow()}>
+                  {isSyncing ? 'Syncing…' : 'Sync now'}
                 </Button>
                 {integration.status === 'PAUSED' || integration.status === 'ERROR' ? (
                   <Button variant="secondary" icon={<Play className="w-3.5 h-3.5" />} loading={togglePause.isPending} onClick={() => togglePause.mutate(true)}>

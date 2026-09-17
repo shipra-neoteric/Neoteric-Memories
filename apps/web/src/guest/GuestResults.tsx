@@ -85,6 +85,13 @@ export function GuestResults() {
         method: 'POST',
         body: { photoIds: [...selected], all: selected.size === data.photos.length },
       })
+      // Nothing is continuously polling the job queue on this deployment (see
+      // apps/api/api/index.js's own doc comment) — without this, the ZIP would only
+      // ever get built once the GitHub Actions recovery cron happens to tick, which
+      // isn't prompt enough for someone waiting on this screen. Errors are ignored
+      // here on purpose: pollDownload below still works correctly (just slower) if
+      // this one call fails for any reason, since the recovery cron is still there.
+      void apiFetch(`/api/guest/sessions/${sessionId}/downloads/${res.downloadJobId}/process`, { method: 'POST' }).catch(() => {})
       await pollDownload(sessionId, res.downloadJobId)
     } catch (err) {
       toastError(err instanceof ApiError ? err.message : 'Download failed')
