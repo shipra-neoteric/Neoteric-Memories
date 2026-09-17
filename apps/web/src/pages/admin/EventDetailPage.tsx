@@ -122,22 +122,31 @@ export function EventDetailPage() {
   // Drives photo processing forward without an always-on worker: on a serverless
   // deployment nothing is continuously polling the job queue on its own (see
   // apps/api/api/index.js's own doc comment), so after an upload finishes, this admin
-  // page itself calls POST .../jobs/process-next once per still-queued job,
-  // sequentially (never more than one in flight — a second call only ever starts
-  // after the previous one's response), until the batch is done. Bounded by
-  // MAX_DRAIN_ATTEMPTS so a single browser tab can't loop forever if something's
-  // stuck — the GitHub Actions recovery cron (backend-cron.yml) and the "Resume
-  // processing" button (shown whenever photos are still PENDING/PROCESSING, computed
-  // straight from the polled photo list, so it survives a refresh without needing to
-  // remember which batch was in progress) both exist to pick up from wherever this
-  // loop left off.
+  // page itself calls POST .../jobs/process-next until the batch is done. Runs
+  // DRAIN_CONCURRENCY calls at once (each on its own Vercel function invocation) —
+  // process-next claims exactly one job per call regardless (server-enforced, see
+  // modules/jobs/router.ts), so this is what actually lets several photos convert/
+  // index in parallel instead of strictly one at a time; claimAndRunScopedJob's
+  // optimistic claiming (jobs/loop.ts) is what makes concurrent calls safe (never
+  // double-process the same job). Each of the DRAIN_CONCURRENCY "lanes" keeps calling
+  // until IT sees nothing left to claim, so lanes naturally wind down as the batch
+  // empties rather than all stopping at once. Bounded by MAX_DRAIN_ATTEMPTS (shared
+  // across all lanes) so a single browser tab can't loop forever if something's stuck
+  // — the GitHub Actions recovery cron (backend-cron.yml) and the "Resume processing"
+  // button (shown whenever photos are still PENDING/PROCESSING, computed straight
+  // from the polled photo list, so it survives a refresh without needing to remember
+  // which batch was in progress) both exist to pick up from wherever this loop left
+  // off.
   const MAX_DRAIN_ATTEMPTS = 80
+  const DRAIN_CONCURRENCY = 4
   const [isDraining, setIsDraining] = useState(false)
 
   const drainPhotoJobs = async (batchId?: string) => {
     setIsDraining(true)
-    try {
-      for (let attempt = 0; attempt < MAX_DRAIN_ATTEMPTS; attempt++) {
+    const attemptsUsed = { count: 0 }
+    const runLane = async () => {
+      while (attemptsUsed.count < MAX_DRAIN_ATTEMPTS) {
+        attemptsUsed.count += 1
         const res = await apiFetch<{
           processed: boolean
           jobId?: string
@@ -147,8 +156,11 @@ export function EventDetailPage() {
         }>(`/api/admin/events/${eventId}/jobs/process-next`, { method: 'POST', body: batchId ? { batchId } : {} })
 
         queryClient.invalidateQueries({ queryKey: ['event-photos', eventId] })
-        if (!res.processed || (res.remainingForBatch ?? 0) === 0) break
+        if (!res.processed) return // nothing left for this lane to claim right now
       }
+    }
+    try {
+      await Promise.all(Array.from({ length: DRAIN_CONCURRENCY }, () => runLane()))
     } catch (err) {
       toastError(err instanceof ApiError ? err.message : 'Photo processing was interrupted — use "Resume processing" to continue')
     } finally {
