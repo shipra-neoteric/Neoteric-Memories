@@ -6,7 +6,9 @@
   "rewrites": [{ "source": "/(.*)", "destination": "/api" }],
   "functions": {
     "api/index.js": {
-      "includeFiles": "dist/lib/heicConvertWorker.js"
+      "includeFiles": "dist/lib/heicConvertWorker.js",
+      "maxDuration": 45
     }
-  }
+  },
+  "crons": [{ "path": "/internal/cron", "schedule": "0 3 * * *" }]
 }

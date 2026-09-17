@@ -5,13 +5,30 @@ name: Backend job queue trigger
 # the way apps/api/src/jobs/loop.ts's startWorkerLoop() does on a persistent process
 # (Render, local dev). GET /internal/cron (see apps/api/src/app.ts) does one bounded
 # pass through that same queue instead — this workflow is what calls it periodically,
-# since Vercel's own Cron Jobs are limited to once/day on the Hobby plan. Runs on
-# GitHub's schedule trigger rather than a third-party service since this repo is
-# public (unlimited free Actions minutes) and needs no new account.
+# since Vercel's own Cron Jobs are limited to once/day on the Hobby plan (see
+# vercel.json's `crons` entry, used instead for a once-daily retention-focused
+# trigger). Runs on GitHub's schedule trigger rather than a third-party service since
+# this repo is public (unlimited free Actions minutes) and needs no new account.
+#
+# This is a RECOVERY/backup mechanism, not a promise of precise timing — GitHub's
+# schedule trigger is known to run meaningfully later than the configured interval
+# under platform load, sometimes by several minutes. For prompt processing right
+# after an admin action (an upload finishing, a Drive "Sync Now" click), the admin UI
+# itself calls POST .../jobs/process-next / .../drive/sync-now directly — see
+# EventDetailPage.tsx — this workflow exists to eventually catch anything that's
+# still queued regardless (e.g. a browser tab closed mid-batch).
 on:
   schedule:
     - cron: '*/5 * * * *'
   workflow_dispatch: {}
+
+# If a run is still in flight when the next scheduled tick fires (e.g. a slow cold
+# start), cancel the older one rather than letting two overlapping runs both poll the
+# queue at once — harmless either way (claimNextJob's optimistic locking means they'd
+# never double-process the same job) but wasteful.
+concurrency:
+  group: backend-cron
+  cancel-in-progress: true
 
 jobs:
   trigger:
@@ -20,7 +37,8 @@ jobs:
       - name: Ping /internal/cron
         run: |
           status=$(curl -s -o /tmp/response.json -w "%{http_code}" \
-            "https://neoteric-memories-backend.vercel.app/internal/cron?secret=${{ secrets.CRON_SECRET }}")
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            "https://neoteric-memories-backend.vercel.app/internal/cron")
           echo "HTTP status: $status"
           cat /tmp/response.json
           echo
