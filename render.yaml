@@ -1,13 +1,30 @@
-# Render Blueprint — deploys the API as a single web service (HTTP server +
-# background worker run embedded in the same process, same as local dev; see
-# apps/api/src/server.ts). Import this repo at https://dashboard.render.com/blueprints
-# and Render will read this file automatically, or create the service manually using
-# the same commands/env vars below — see docs/DEPLOYMENT.md for the full walkthrough
-# (most env vars need real values only you have — Atlas connection string, AWS
-# credentials, etc — Render will prompt for anything marked sync:false).
+# Render Blueprint — deploys ONLY the background worker (job queue processor +
+# Drive sync/retention schedulers, see apps/api/src/jobs/worker.ts). The HTTP API
+# itself runs on Vercel as a serverless function (see apps/api/api/index.js +
+# apps/api/vercel.json) — that deployment deliberately does NOT run this worker loop
+# (a serverless invocation ends shortly after it responds, so a setInterval-based
+# loop there wouldn't keep running between requests), which is exactly why this
+# service exists: something needs to keep polling the job queue continuously, and a
+# persistent Render process does that far more promptly (~2s) than Vercel's
+# workaround of an external scheduler hitting GET /internal/cron every few minutes
+# (see .github/workflows/backend-cron.yml) ever can.
+#
+# Import this repo at https://dashboard.render.com/blueprints and Render will read
+# this file automatically, or create the service manually using the same
+# commands/env vars below — see docs/DEPLOYMENT.md for the full walkthrough (most env
+# vars need real values only you have — Atlas connection string, AWS credentials,
+# etc — Render will prompt for anything marked sync:false).
+#
+# NOTE: this service's `type` changed from `web` to `worker` (it used to also serve
+# HTTP, embedded in the same process — see git history before this comment if you
+# need that). Render does not support changing a service's type in place via a
+# Blueprint re-sync; if you're migrating an existing `neoteric-memories-api` web
+# service, either delete it and let this Blueprint create a fresh worker service, or
+# create the worker service manually and delete the old web service once it's
+# confirmed working — see docs/DEPLOYMENT.md.
 services:
-  - type: web
-    name: neoteric-memories-api
+  - type: worker
+    name: neoteric-memories-worker
     runtime: node
     plan: starter
     region: singapore # pick whatever is closest to your guests; Atlas/S3 should be in the same region
@@ -15,17 +32,14 @@ services:
     # `npm install` skip devDependencies, but @types/node, typescript, and prisma's
     # CLI (all needed only to build, not to run) all live there.
     buildCommand: npm install --include=dev && npm run build -w @neoteric-memories/shared && npm run build -w @neoteric-memories/api
-    startCommand: node apps/api/dist/server.js
-    healthCheckPath: /health
+    startCommand: node apps/api/dist/jobs/worker.js
     envVars:
       - key: NODE_ENV
         value: production
-      - key: PORT
-        value: 4000
       - key: APP_BASE_URL
         sync: false # your Vercel frontend URL, e.g. https://neoteric-memories.vercel.app
       - key: API_BASE_URL
-        sync: false # this service's own Render URL, e.g. https://neoteric-memories-api.onrender.com
+        sync: false # the Vercel backend's own URL, e.g. https://neoteric-memories-backend.vercel.app
       - key: DATABASE_URL
         sync: false # MongoDB Atlas connection string — see docs/DEPLOYMENT.md
       - key: JWT_SECRET
@@ -55,4 +69,4 @@ services:
       - key: GOOGLE_CLIENT_SECRET
         sync: false
       - key: GOOGLE_OAUTH_REDIRECT_URI
-        sync: false # https://<this service's URL>/api/admin/integrations/google/callback
+        sync: false # https://<the Vercel backend's URL>/api/admin/integrations/google/callback
