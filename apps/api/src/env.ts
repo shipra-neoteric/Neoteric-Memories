@@ -98,6 +98,15 @@ const envSchema = z.object({
   // in Google Cloud Console. Defaults to the API's own callback route.
   GOOGLE_OAUTH_REDIRECT_URI: z.string().url().optional(),
   DRIVE_SYNC_INTERVAL_MINUTES: z.coerce.number().int().min(1).default(3),
+
+  // Shared secret for GET /internal/cron — a serverless deployment (see
+  // api/index.js) has no long-running process to poll the job queue itself, so an
+  // external scheduler hits this route periodically instead. Optional because a
+  // persistent-process deployment (Render, local dev) drives the same queue via
+  // jobs/loop.ts's setInterval-based startWorkerLoop() and never needs this route at
+  // all — but if this IS set, the route refuses every request with the wrong (or
+  // missing) secret, so accidentally leaving it unset is fail-closed, not fail-open.
+  CRON_SECRET: z.string().min(16).optional(),
 })
 
 export type Env = z.infer<typeof envSchema>

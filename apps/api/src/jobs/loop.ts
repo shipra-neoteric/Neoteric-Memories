@@ -9,9 +9,80 @@ const RETENTION_SWEEP_INTERVAL_MS = 5 * 60 * 1000
 const DRIVE_SYNC_INTERVAL_MS = env.DRIVE_SYNC_INTERVAL_MINUTES * 60 * 1000
 const BACKOFF_BASE_MS = 3000
 
+// How long a job can sit in RUNNING before we assume whatever claimed it died
+// mid-work without updating its status — e.g. a serverless function invocation (see
+// runJobsOnce() below) that got killed for running past its execution time limit
+// partway through dispatchJob(). claimNextJob() only ever looks at QUEUED jobs, so
+// without this a job stuck in RUNNING would stay stuck forever.
+const STALE_RUNNING_THRESHOLD_MS = 2 * 60 * 1000
+
 let loopHandle: ReturnType<typeof setInterval> | undefined
 let retentionHandle: ReturnType<typeof setInterval> | undefined
 let driveSyncHandle: ReturnType<typeof setInterval> | undefined
+
+/**
+ * Resets any job stuck in RUNNING past STALE_RUNNING_THRESHOLD_MS back to QUEUED
+ * (incrementing attempts, same as a normal failure) so it gets picked up again
+ * instead of sitting abandoned forever. See the threshold's own doc comment for why
+ * this matters specifically for runJobsOnce()'s serverless callers.
+ */
+async function recoverStaleJobs(): Promise<void> {
+  const prisma = getPrisma()
+  const stale = await prisma.backgroundJob.findMany({
+    where: { status: 'RUNNING', updatedAt: { lt: new Date(Date.now() - STALE_RUNNING_THRESHOLD_MS) } },
+  })
+  for (const job of stale) {
+    const attempts = job.attempts
+    if (attempts >= job.maxAttempts) {
+      logger.error({ jobId: job.id, type: job.type, attempts }, 'Job permanently failed: stuck in RUNNING past the stale threshold')
+      await prisma.backgroundJob.update({ where: { id: job.id }, data: { status: 'FAILED', lastError: 'Stuck in RUNNING past the stale threshold (invocation likely killed mid-work)' } })
+    } else {
+      logger.warn({ jobId: job.id, type: job.type, attempts }, 'Recovering job stuck in RUNNING past the stale threshold — requeuing')
+      await prisma.backgroundJob.update({ where: { id: job.id }, data: { status: 'QUEUED', runAfter: new Date() } })
+    }
+  }
+}
+
+/**
+ * Enqueues RETENTION_SWEEP/DRIVE_SYNC if their interval's current "bucket" hasn't
+ * already been enqueued — the exact same idempotency scheme startWorkerLoop()'s
+ * setInterval timers use (see enqueueJob's dedup-by-idempotencyKey doc comment),
+ * just evaluated once per call instead of on its own timer. Safe to call as often as
+ * runJobsOnce() itself gets invoked; it only actually enqueues once per interval.
+ */
+async function enqueueDueScheduledJobs(): Promise<void> {
+  const retentionBucket = Math.floor(Date.now() / RETENTION_SWEEP_INTERVAL_MS)
+  await enqueueJob('RETENTION_SWEEP', {}, `retention-sweep:${retentionBucket}`).catch((err) =>
+    logger.error({}, `Failed to enqueue retention sweep: ${String(err)}`)
+  )
+  const driveSyncBucket = Math.floor(Date.now() / DRIVE_SYNC_INTERVAL_MS)
+  await enqueueJob('DRIVE_SYNC', {}, `drive-sync:${driveSyncBucket}`).catch((err) =>
+    logger.error({}, `Failed to enqueue drive sync: ${String(err)}`)
+  )
+}
+
+/**
+ * One bounded pass through the job queue for callers with no persistent process to
+ * poll it continuously — specifically GET /internal/cron (see app.ts), hit by an
+ * external scheduler on a serverless deployment (api/index.js) that has no
+ * setInterval-based startWorkerLoop() of its own. Claims and processes jobs
+ * one at a time until either the queue is empty or budgetMs has elapsed, leaving
+ * enough headroom for the caller's own function execution limit (e.g. Vercel's
+ * Hobby-plan 10s cap) to not get hit mid-job.
+ */
+export async function runJobsOnce(budgetMs: number): Promise<{ processed: number; elapsedMs: number }> {
+  const start = Date.now()
+  await recoverStaleJobs()
+  await enqueueDueScheduledJobs()
+
+  let processed = 0
+  while (Date.now() - start < budgetMs) {
+    const didWork = await claimNextJob()
+    if (!didWork) break
+    processed += 1
+  }
+  return { processed, elapsedMs: Date.now() - start }
+}
 
 export async function claimNextJob(): Promise<boolean> {
   const prisma = getPrisma()

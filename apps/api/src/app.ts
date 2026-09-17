@@ -4,8 +4,11 @@ import cookieParser from 'cookie-parser'
 import helmet from 'helmet'
 import { env } from './env.js'
 import { errorHandler } from './middleware/errorHandler.js'
+import { asyncHandler } from './middleware/asyncHandler.js'
 import { requireAuth, requireCsrf } from './middleware/auth.js'
 import { adminApiLimiter } from './middleware/rateLimit.js'
+import { Errors } from './lib/errors.js'
+import { runJobsOnce } from './jobs/loop.js'
 import { authRouter } from './modules/auth/router.js'
 import { sitesRouter } from './modules/sites/router.js'
 import { usersRouter } from './modules/users/router.js'
@@ -43,6 +46,26 @@ export function createApp() {
   app.use(cookieParser())
 
   app.get('/health', (_req, res) => res.json({ status: 'ok', env: env.NODE_ENV }))
+
+  // Drives the same background job queue jobs/loop.ts's startWorkerLoop() polls
+  // continuously on a persistent process (Render, local dev) — but a serverless
+  // deployment (see api/index.js) has no such process, so an external scheduler
+  // hits this route periodically instead (see docs/DEPLOYMENT.md for setup). No
+  // admin session involved, so this intentionally sits outside requireAuth/requireCsrf
+  // — CRON_SECRET is the only gate. Bounded to 8s so a single invocation can't run
+  // past a tight serverless execution time limit (e.g. Vercel Hobby's 10s cap)
+  // mid-job; runJobsOnce() itself recovers any job a previous invocation left stuck
+  // RUNNING from exactly that happening.
+  app.get(
+    '/internal/cron',
+    asyncHandler(async (req, res) => {
+      if (!env.CRON_SECRET || req.query.secret !== env.CRON_SECRET) {
+        throw Errors.unauthorized('Invalid or missing cron secret')
+      }
+      const summary = await runJobsOnce(8000)
+      res.json({ ok: true, ...summary })
+    })
+  )
 
   app.use('/files', filesRouter)
   app.use('/api/guest', guestRouter)

@@ -1,0 +1,30 @@
+name: Backend job queue trigger
+
+# The API's backend Vercel deployment (see apps/api/api/index.js) is a serverless
+# function with no long-running process of its own to poll the background job queue
+# the way apps/api/src/jobs/loop.ts's startWorkerLoop() does on a persistent process
+# (Render, local dev). GET /internal/cron (see apps/api/src/app.ts) does one bounded
+# pass through that same queue instead — this workflow is what calls it periodically,
+# since Vercel's own Cron Jobs are limited to once/day on the Hobby plan. Runs on
+# GitHub's schedule trigger rather than a third-party service since this repo is
+# public (unlimited free Actions minutes) and needs no new account.
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch: {}
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping /internal/cron
+        run: |
+          status=$(curl -s -o /tmp/response.json -w "%{http_code}" \
+            "https://neoteric-memories-backend.vercel.app/internal/cron?secret=${{ secrets.CRON_SECRET }}")
+          echo "HTTP status: $status"
+          cat /tmp/response.json
+          echo
+          if [ "$status" != "200" ]; then
+            echo "::error::Cron trigger failed with HTTP $status"
+            exit 1
+          fi
