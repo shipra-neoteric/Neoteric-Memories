@@ -34,6 +34,17 @@ export function setCsrfToken(token: string | undefined): void {
   inMemoryCsrfToken = token
 }
 
+// Guest session auth used to be a cookie, but the guest app (Vercel) and API
+// (Render) are on different domains, and Safari ITP / in-app browsers (WhatsApp,
+// Instagram) silently drop that cross-site cookie on some devices, breaking gallery
+// access. It's now a signed token (see api/src/lib/guestToken.ts) handed back once
+// by GET /guest/events/:token and echoed here on every later guest request instead.
+let inMemoryGuestToken: string | undefined
+
+export function setGuestToken(token: string | undefined): void {
+  inMemoryGuestToken = token
+}
+
 function deviceId(): string {
   const key = 'nm_device_id'
   let id = localStorage.getItem(key)
@@ -50,6 +61,7 @@ export async function apiFetch<T = unknown>(
 ): Promise<T> {
   const method = options.method ?? 'GET'
   const headers: Record<string, string> = { 'X-Device-Id': deviceId(), ...options.headers }
+  if (inMemoryGuestToken) headers['X-Guest-Token'] = inMemoryGuestToken
 
   let body: BodyInit | undefined
   if (options.body instanceof FormData) {

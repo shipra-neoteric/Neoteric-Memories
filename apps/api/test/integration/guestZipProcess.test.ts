@@ -12,32 +12,33 @@ async function guestSearch(rawToken: string, personId: string) {
   const agent = request.agent(app)
   const landing = await agent.get(`/api/guest/events/${rawToken}`)
   const sessionId = landing.body.sessionId as string
-  await agent.post(`/api/guest/sessions/${sessionId}/consent`).send(validConsentBody)
+  const sessionToken = landing.body.sessionToken as string
+  await agent.post(`/api/guest/sessions/${sessionId}/consent`).set('X-Guest-Token', sessionToken).send(validConsentBody)
   const selfieBuffer = await renderSyntheticPhoto([{ personId, x: 260, y: 130, size: 300 }], 'selfie')
-  const selfie = await agent.post(`/api/guest/sessions/${sessionId}/selfie`).attach('selfie', selfieBuffer, 'selfie.jpg')
+  const selfie = await agent.post(`/api/guest/sessions/${sessionId}/selfie`).set('X-Guest-Token', sessionToken).attach('selfie', selfieBuffer, 'selfie.jpg')
   const searchId = selfie.body.faceSearchId as string
-  return { agent, sessionId, searchId }
+  return { agent, sessionId, searchId, sessionToken }
 }
 
 describe('POST /api/guest/sessions/:sessionId/downloads/:downloadJobId/process', () => {
   it("claims and runs the guest's own ZIP job, and a repeat call finds nothing left to process", async () => {
     const { eventId, rawToken } = await setupLiveEvent('person-1')
     void eventId
-    const { agent, sessionId, searchId } = await guestSearch(rawToken, 'person-1')
+    const { agent, sessionId, searchId, sessionToken } = await guestSearch(rawToken, 'person-1')
 
-    const zipReq = await agent.post(`/api/guest/sessions/${sessionId}/searches/${searchId}/download-zip`).send({ all: true })
+    const zipReq = await agent.post(`/api/guest/sessions/${sessionId}/searches/${searchId}/download-zip`).set('X-Guest-Token', sessionToken).send({ all: true })
     const downloadJobId = zipReq.body.downloadJobId as string
 
-    const first = await agent.post(`/api/guest/sessions/${sessionId}/downloads/${downloadJobId}/process`)
+    const first = await agent.post(`/api/guest/sessions/${sessionId}/downloads/${downloadJobId}/process`).set('X-Guest-Token', sessionToken)
     expect(first.status).toBe(200)
     expect(first.body.processed).toBe(true)
     expect(first.body.result).toBe('completed')
 
-    const status = await agent.get(`/api/guest/sessions/${sessionId}/downloads/${downloadJobId}`)
+    const status = await agent.get(`/api/guest/sessions/${sessionId}/downloads/${downloadJobId}`).set('X-Guest-Token', sessionToken)
     expect(status.body.status).toBe('COMPLETED')
     expect(status.body.url).toBeTruthy()
 
-    const second = await agent.post(`/api/guest/sessions/${sessionId}/downloads/${downloadJobId}/process`)
+    const second = await agent.post(`/api/guest/sessions/${sessionId}/downloads/${downloadJobId}/process`).set('X-Guest-Token', sessionToken)
     expect(second.body.processed).toBe(false)
     expect(second.body.result).toBe('nothing_to_process')
   })
@@ -47,11 +48,16 @@ describe('POST /api/guest/sessions/:sessionId/downloads/:downloadJobId/process',
     const guestA = await guestSearch(rawToken, 'person-1')
     const guestB = await guestSearch(rawToken, 'person-1')
 
-    const zipReqA = await guestA.agent.post(`/api/guest/sessions/${guestA.sessionId}/searches/${guestA.searchId}/download-zip`).send({ all: true })
+    const zipReqA = await guestA.agent
+      .post(`/api/guest/sessions/${guestA.sessionId}/searches/${guestA.searchId}/download-zip`)
+      .set('X-Guest-Token', guestA.sessionToken)
+      .send({ all: true })
     const downloadJobId = zipReqA.body.downloadJobId as string
 
-    // Guest B attempts to process guest A's job using B's own valid session cookie.
-    const res = await guestB.agent.post(`/api/guest/sessions/${guestB.sessionId}/downloads/${downloadJobId}/process`)
+    // Guest B attempts to process guest A's job using B's own valid session token.
+    const res = await guestB.agent
+      .post(`/api/guest/sessions/${guestB.sessionId}/downloads/${downloadJobId}/process`)
+      .set('X-Guest-Token', guestB.sessionToken)
     expect(res.status).toBe(404)
   })
 })

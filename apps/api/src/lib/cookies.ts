@@ -5,7 +5,6 @@ export const COOKIE_NAMES = {
   ACCESS: 'nm_session',
   REFRESH: 'nm_refresh',
   CSRF: 'nm_csrf',
-  GUEST: 'nm_guest',
 } as const
 
 const secure = env.NODE_ENV === 'production'
@@ -43,16 +42,6 @@ export function setCsrfCookie(res: Response, token: string) {
     secure,
     sameSite,
     maxAge: env.REFRESH_TOKEN_TTL_HOURS * 60 * 60 * 1000,
-    path: '/',
-  })
-}
-
-export function setGuestCookie(res: Response, sessionId: string, ttlMs: number) {
-  res.cookie(COOKIE_NAMES.GUEST, sessionId, {
-    httpOnly: true,
-    secure,
-    sameSite,
-    maxAge: ttlMs,
     path: '/',
   })
 }

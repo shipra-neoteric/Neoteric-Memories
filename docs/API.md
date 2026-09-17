@@ -1,6 +1,6 @@
 # API Reference
 
-Base URL: `API_BASE_URL` (default `http://localhost:4000`). All request/response bodies are JSON unless noted. Admin routes use httpOnly cookies for auth (never send credentials via headers/localStorage) plus a `X-CSRF-Token` header on state-changing requests, echoing the non-httpOnly `nm_csrf` cookie set at login. Guest routes use a separate httpOnly `nm_guest` cookie, and every guest response is scoped to that one cookie's session.
+Base URL: `API_BASE_URL` (default `http://localhost:4000`). All request/response bodies are JSON unless noted. Admin routes use httpOnly cookies for auth (never send credentials via headers/localStorage) plus a `X-CSRF-Token` header on state-changing requests, echoing the non-httpOnly `nm_csrf` cookie set at login. Guest routes use a signed `sessionToken` (returned once by `GET /guest/events/:token` and echoed back on every later guest request as the `X-Guest-Token` header) instead of a cookie — the guest app and API are cross-domain, and a cross-site cookie gets silently dropped by Safari ITP and in-app browsers (WhatsApp/Instagram) on some devices. Every guest response is scoped to that one token's session.
 
 Errors are always `{ "error": { "code": string, "message": string, "details"?: unknown } }` with a matching HTTP status.
 

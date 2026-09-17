@@ -97,7 +97,7 @@ This is the original path chosen for Neoteric Memories: static frontend on Verce
 2. Create/confirm a site and event, upload a few photos, confirm they process.
 3. Generate a QR code on the event page — the generated link should use your **Vercel URL** (it's derived from the Origin/Referer header of the browser tab you're using, which will be the Vercel domain since that's where the admin app is running).
 4. Scan it on a phone (any network — this is now a real public URL, not LAN-only) and walk through the guest flow.
-5. Check the browser's dev tools → Application → Cookies on the Vercel domain: confirm `nm_session`/`nm_guest` cookies are present after login/consent. If they're missing, double check `NODE_ENV=production` is actually set on Render (it drives the `Secure; SameSite=None` cookie attributes needed for the cross-domain Vercel↔Render setup — see `apps/api/src/lib/cookies.ts`).
+5. Check the browser's dev tools → Application → Cookies on the Vercel domain: confirm the `nm_session` cookie is present after admin login. If it's missing, double check `NODE_ENV=production` is actually set on Render (it drives the `Secure; SameSite=None` cookie attributes needed for the cross-domain Vercel↔Render setup — see `apps/api/src/lib/cookies.ts`). The guest flow no longer uses a cookie at all (see `apps/api/src/lib/guestToken.ts`) specifically because that cross-site cookie was getting dropped by Safari ITP and in-app browsers (WhatsApp/Instagram) on some devices — instead check that `sessionToken`/`X-Guest-Token` round-trips (Network tab) and that the guest app's `localStorage` has an `nm_guest_<token>` entry after landing.
 
 ## Notes
 

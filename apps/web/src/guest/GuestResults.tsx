@@ -139,6 +139,7 @@ export function GuestResults() {
     if (!isConfirmed) return
     await apiFetch(`/api/guest/sessions/${sessionId}`, { method: 'DELETE' })
     sessionStorage.removeItem(`nm_search_${token}`)
+    localStorage.removeItem(`nm_guest_${token}`)
     toastSuccess('Your session data has been deleted')
     navigate('..')
   }

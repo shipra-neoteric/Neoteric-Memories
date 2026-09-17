@@ -4,12 +4,12 @@ import { z } from 'zod'
 import { consentSubmitSchema, downloadRequestSchema, wrongMatchReportSchema, objectIdSchema, DEFAULTS } from '@neoteric-memories/shared'
 import { asyncHandler } from '../../middleware/asyncHandler.js'
 import { validateBody, validateParams } from '../../middleware/validate.js'
-import { requireGuestSessionCookie } from '../../middleware/guestAuth.js'
+import { requireGuestSessionToken } from '../../middleware/guestAuth.js'
 import { guestIpLimiter } from '../../middleware/rateLimit.js'
 import { getPrisma } from '../../db.js'
 import { Errors } from '../../lib/errors.js'
 import { clientDeviceHash, clientIpHash } from '../../lib/request.js'
-import { setGuestCookie } from '../../lib/cookies.js'
+import { signGuestToken } from '../../lib/guestToken.js'
 import { getStorageProvider } from '../../providers/storage/index.js'
 import { resolveGuestAccessToken } from '../events/accessTokens.js'
 import { getOrCreateGuestSession, requireActiveSession, requireLiveEventForSession, checkAndIncrementSelfieAttempt, checkDeviceSearchLimit } from './session.js'
@@ -43,13 +43,14 @@ guestRouter.get(
       event.consentVersionId ? prisma.consentVersion.findUnique({ where: { id: event.consentVersionId } }) : null,
     ])
 
-    const existingSessionId = req.cookies?.nm_guest
+    // The client re-sends its own previous session id (from localStorage) as `sid`
+    // instead of a cookie — see the doc comment on requireGuestSessionToken for why.
+    const existingSessionId = typeof req.query.sid === 'string' ? req.query.sid : undefined
     const session = await getOrCreateGuestSession(event.id, existingSessionId, {
       ipHash: clientIpHash(req),
       deviceHash: clientDeviceHash(req),
       userAgent: req.header('user-agent'),
     })
-    setGuestCookie(res, session.id, DEFAULTS.GUEST_SESSION_TTL_HOURS * 60 * 60 * 1000)
 
     const coverUrl = event.coverImageKey
       ? await getStorageProvider().getSignedDownloadUrl(event.coverImageKey, 3600)
@@ -58,6 +59,7 @@ guestRouter.get(
     res.json({
       ok: true,
       sessionId: session.id,
+      sessionToken: signGuestToken(session.id),
       event: {
         id: event.id,
         name: event.name,
@@ -82,7 +84,7 @@ guestRouter.get(
 guestRouter.post(
   '/sessions/:sessionId/consent',
   validateParams(sessionParams),
-  requireGuestSessionCookie,
+  requireGuestSessionToken,
   validateBody(consentSubmitSchema),
   asyncHandler(async (req, res) => {
     const session = await requireActiveSession(req.params.sessionId)
@@ -98,7 +100,7 @@ guestRouter.post(
 guestRouter.post(
   '/sessions/:sessionId/selfie',
   validateParams(sessionParams),
-  requireGuestSessionCookie,
+  requireGuestSessionToken,
   selfieUpload.single('selfie'),
   asyncHandler(async (req, res) => {
     const session = await requireActiveSession(req.params.sessionId)
@@ -130,7 +132,7 @@ guestRouter.post(
 guestRouter.get(
   '/sessions/:sessionId/searches/:searchId/results',
   validateParams(searchParams),
-  requireGuestSessionCookie,
+  requireGuestSessionToken,
   asyncHandler(async (req, res) => {
     await requireActiveSession(req.params.sessionId)
     const prisma = getPrisma()
@@ -165,7 +167,7 @@ guestRouter.get(
 guestRouter.post(
   '/sessions/:sessionId/searches/:searchId/report-wrong-match',
   validateParams(searchParams),
-  requireGuestSessionCookie,
+  requireGuestSessionToken,
   validateBody(wrongMatchReportSchema),
   asyncHandler(async (req, res) => {
     await requireActiveSession(req.params.sessionId)
@@ -177,7 +179,7 @@ guestRouter.post(
 guestRouter.get(
   '/sessions/:sessionId/searches/:searchId/photos/:photoId/download-url',
   validateParams(photoDownloadParams),
-  requireGuestSessionCookie,
+  requireGuestSessionToken,
   asyncHandler(async (req, res) => {
     await requireActiveSession(req.params.sessionId)
     const url = await getSinglePhotoDownloadUrl(req.params.searchId, req.params.sessionId, req.params.photoId)
@@ -188,7 +190,7 @@ guestRouter.get(
 guestRouter.post(
   '/sessions/:sessionId/searches/:searchId/download-zip',
   validateParams(searchParams),
-  requireGuestSessionCookie,
+  requireGuestSessionToken,
   validateBody(downloadRequestSchema),
   asyncHandler(async (req, res) => {
     await requireActiveSession(req.params.sessionId)
@@ -200,7 +202,7 @@ guestRouter.post(
 guestRouter.get(
   '/sessions/:sessionId/downloads/:downloadJobId',
   validateParams(downloadJobParams),
-  requireGuestSessionCookie,
+  requireGuestSessionToken,
   asyncHandler(async (req, res) => {
     const status = await getDownloadJobStatus(req.params.downloadJobId, req.params.sessionId)
     res.json(status)
@@ -217,7 +219,7 @@ guestRouter.get(
 guestRouter.post(
   '/sessions/:sessionId/downloads/:downloadJobId/process',
   validateParams(downloadJobParams),
-  requireGuestSessionCookie,
+  requireGuestSessionToken,
   asyncHandler(async (req, res) => {
     await requireActiveSession(req.params.sessionId)
     const outcome = await processZipDownloadJobNow(req.params.downloadJobId, req.params.sessionId)
@@ -228,7 +230,7 @@ guestRouter.post(
 guestRouter.delete(
   '/sessions/:sessionId',
   validateParams(sessionParams),
-  requireGuestSessionCookie,
+  requireGuestSessionToken,
   asyncHandler(async (req, res) => {
     await deleteGuestSessionData(req.params.sessionId)
     res.json({ success: true })

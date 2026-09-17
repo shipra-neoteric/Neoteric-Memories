@@ -19,31 +19,32 @@ describe('Guest journey — happy path', () => {
     const landing = await agent.get(`/api/guest/events/${rawToken}`)
     expect(landing.body.ok).toBe(true)
     const sessionId = landing.body.sessionId as string
+    const sessionToken = landing.body.sessionToken as string
     expect(landing.body.event.id).toBe(eventId)
 
-    const consent = await agent.post(`/api/guest/sessions/${sessionId}/consent`).send(validConsentBody)
+    const consent = await agent.post(`/api/guest/sessions/${sessionId}/consent`).set('X-Guest-Token', sessionToken).send(validConsentBody)
     expect(consent.status).toBe(201)
 
     const selfieBuffer = await renderSyntheticPhoto([{ personId: 'person-1', x: 260, y: 130, size: 300 }], 'selfie')
-    const selfie = await agent.post(`/api/guest/sessions/${sessionId}/selfie`).attach('selfie', selfieBuffer, 'selfie.jpg')
+    const selfie = await agent.post(`/api/guest/sessions/${sessionId}/selfie`).set('X-Guest-Token', sessionToken).attach('selfie', selfieBuffer, 'selfie.jpg')
     expect(selfie.status).toBe(201)
     expect(selfie.body.resultCount).toBe(1)
     const searchId = selfie.body.faceSearchId as string
 
-    const results = await agent.get(`/api/guest/sessions/${sessionId}/searches/${searchId}/results`)
+    const results = await agent.get(`/api/guest/sessions/${sessionId}/searches/${searchId}/results`).set('X-Guest-Token', sessionToken)
     expect(results.body.photos).toHaveLength(1)
     expect(results.body.disclaimer).toMatch(/probabilistic/i)
     const photoId = results.body.photos[0].photoId as string
 
-    const singleUrl = await agent.get(`/api/guest/sessions/${sessionId}/searches/${searchId}/photos/${photoId}/download-url`)
+    const singleUrl = await agent.get(`/api/guest/sessions/${sessionId}/searches/${searchId}/photos/${photoId}/download-url`).set('X-Guest-Token', sessionToken)
     expect(singleUrl.status).toBe(200)
     expect(singleUrl.body.url).toBeTruthy()
 
-    const zipReq = await agent.post(`/api/guest/sessions/${sessionId}/searches/${searchId}/download-zip`).send({ all: true })
+    const zipReq = await agent.post(`/api/guest/sessions/${sessionId}/searches/${searchId}/download-zip`).set('X-Guest-Token', sessionToken).send({ all: true })
     expect(zipReq.status).toBe(201)
     await processZipGenerate({ downloadJobId: zipReq.body.downloadJobId })
 
-    const zipStatus = await agent.get(`/api/guest/sessions/${sessionId}/downloads/${zipReq.body.downloadJobId}`)
+    const zipStatus = await agent.get(`/api/guest/sessions/${sessionId}/downloads/${zipReq.body.downloadJobId}`).set('X-Guest-Token', sessionToken)
     expect(zipStatus.body.status).toBe('COMPLETED')
     expect(zipStatus.body.url).toBeTruthy()
 
@@ -59,10 +60,11 @@ describe('Guest journey — happy path', () => {
     const agent = request.agent(app)
     const landing = await agent.get(`/api/guest/events/${rawToken}`)
     const sessionId = landing.body.sessionId as string
-    await agent.post(`/api/guest/sessions/${sessionId}/consent`).send(validConsentBody)
+    const sessionToken = landing.body.sessionToken as string
+    await agent.post(`/api/guest/sessions/${sessionId}/consent`).set('X-Guest-Token', sessionToken).send(validConsentBody)
 
     const selfieBuffer = await renderSyntheticPhoto([{ personId: 'person-8', x: 260, y: 130, size: 300 }], 'stranger selfie')
-    const selfie = await agent.post(`/api/guest/sessions/${sessionId}/selfie`).attach('selfie', selfieBuffer, 'selfie.jpg')
+    const selfie = await agent.post(`/api/guest/sessions/${sessionId}/selfie`).set('X-Guest-Token', sessionToken).attach('selfie', selfieBuffer, 'selfie.jpg')
     expect(selfie.body.resultCount).toBe(0)
   })
 })
@@ -73,9 +75,10 @@ describe('Guest journey — consent gating', () => {
     const agent = request.agent(app)
     const landing = await agent.get(`/api/guest/events/${rawToken}`)
     const sessionId = landing.body.sessionId as string
+    const sessionToken = landing.body.sessionToken as string
 
     const selfieBuffer = await renderSyntheticPhoto([{ personId: 'person-1', x: 260, y: 130, size: 300 }], 'selfie')
-    const res = await agent.post(`/api/guest/sessions/${sessionId}/selfie`).attach('selfie', selfieBuffer, 'selfie.jpg')
+    const res = await agent.post(`/api/guest/sessions/${sessionId}/selfie`).set('X-Guest-Token', sessionToken).attach('selfie', selfieBuffer, 'selfie.jpg')
     expect(res.status).toBe(403)
   })
 
@@ -84,14 +87,15 @@ describe('Guest journey — consent gating', () => {
     const agent = request.agent(app)
     const landing = await agent.get(`/api/guest/events/${rawToken}`)
     const sessionId = landing.body.sessionId as string
+    const sessionToken = landing.body.sessionToken as string
 
-    await agent.post(`/api/guest/sessions/${sessionId}/consent`).send({
+    await agent.post(`/api/guest/sessions/${sessionId}/consent`).set('X-Guest-Token', sessionToken).send({
       required: { search_purpose: true, match_accuracy_disclaimer: true, retention_policy: true },
       optional: { marketing_contact: false, marketing_photo_use: false }, // explicitly declined
     })
 
     const selfieBuffer = await renderSyntheticPhoto([{ personId: 'person-1', x: 260, y: 130, size: 300 }], 'selfie')
-    const selfie = await agent.post(`/api/guest/sessions/${sessionId}/selfie`).attach('selfie', selfieBuffer, 'selfie.jpg')
+    const selfie = await agent.post(`/api/guest/sessions/${sessionId}/selfie`).set('X-Guest-Token', sessionToken).attach('selfie', selfieBuffer, 'selfie.jpg')
     expect(selfie.status).toBe(201)
     expect(selfie.body.resultCount).toBe(1)
   })
@@ -103,10 +107,11 @@ describe('Guest journey — selfie validation + attempt limiting', () => {
     const agent = request.agent(app)
     const landing = await agent.get(`/api/guest/events/${rawToken}`)
     const sessionId = landing.body.sessionId as string
-    await agent.post(`/api/guest/sessions/${sessionId}/consent`).send(validConsentBody)
+    const sessionToken = landing.body.sessionToken as string
+    await agent.post(`/api/guest/sessions/${sessionId}/consent`).set('X-Guest-Token', sessionToken).send(validConsentBody)
 
     const blank = await renderSyntheticPhoto([], 'no face')
-    const res = await agent.post(`/api/guest/sessions/${sessionId}/selfie`).attach('selfie', blank, 'blank.jpg')
+    const res = await agent.post(`/api/guest/sessions/${sessionId}/selfie`).set('X-Guest-Token', sessionToken).attach('selfie', blank, 'blank.jpg')
     expect(res.status).toBe(422)
     expect(res.body.reason).toBe('NO_FACE_DETECTED')
 
@@ -119,7 +124,8 @@ describe('Guest journey — selfie validation + attempt limiting', () => {
     const agent = request.agent(app)
     const landing = await agent.get(`/api/guest/events/${rawToken}`)
     const sessionId = landing.body.sessionId as string
-    await agent.post(`/api/guest/sessions/${sessionId}/consent`).send(validConsentBody)
+    const sessionToken = landing.body.sessionToken as string
+    await agent.post(`/api/guest/sessions/${sessionId}/consent`).set('X-Guest-Token', sessionToken).send(validConsentBody)
 
     const twoFaces = await renderSyntheticPhoto(
       [
@@ -128,7 +134,7 @@ describe('Guest journey — selfie validation + attempt limiting', () => {
       ],
       'two faces'
     )
-    const res = await agent.post(`/api/guest/sessions/${sessionId}/selfie`).attach('selfie', twoFaces, 'two.jpg')
+    const res = await agent.post(`/api/guest/sessions/${sessionId}/selfie`).set('X-Guest-Token', sessionToken).attach('selfie', twoFaces, 'two.jpg')
     expect(res.status).toBe(422)
     expect(res.body.reason).toBe('MULTIPLE_FACES_DETECTED')
   })
@@ -138,13 +144,14 @@ describe('Guest journey — selfie validation + attempt limiting', () => {
     const agent = request.agent(app)
     const landing = await agent.get(`/api/guest/events/${rawToken}`)
     const sessionId = landing.body.sessionId as string
-    await agent.post(`/api/guest/sessions/${sessionId}/consent`).send(validConsentBody)
+    const sessionToken = landing.body.sessionToken as string
+    await agent.post(`/api/guest/sessions/${sessionId}/consent`).set('X-Guest-Token', sessionToken).send(validConsentBody)
 
     const blank = await renderSyntheticPhoto([], 'no face')
     for (let i = 0; i < 5; i += 1) {
-      await agent.post(`/api/guest/sessions/${sessionId}/selfie`).attach('selfie', blank, 'blank.jpg')
+      await agent.post(`/api/guest/sessions/${sessionId}/selfie`).set('X-Guest-Token', sessionToken).attach('selfie', blank, 'blank.jpg')
     }
-    const sixth = await agent.post(`/api/guest/sessions/${sessionId}/selfie`).attach('selfie', blank, 'blank.jpg')
+    const sixth = await agent.post(`/api/guest/sessions/${sessionId}/selfie`).set('X-Guest-Token', sessionToken).attach('selfie', blank, 'blank.jpg')
     expect(sixth.status).toBe(429)
   })
 })
@@ -155,19 +162,21 @@ describe('Guest journey — wrong-match reporting (IDOR guard)', () => {
     const agent = request.agent(app)
     const landing = await agent.get(`/api/guest/events/${rawToken}`)
     const sessionId = landing.body.sessionId as string
-    await agent.post(`/api/guest/sessions/${sessionId}/consent`).send(validConsentBody)
+    const sessionToken = landing.body.sessionToken as string
+    await agent.post(`/api/guest/sessions/${sessionId}/consent`).set('X-Guest-Token', sessionToken).send(validConsentBody)
     const selfieBuffer = await renderSyntheticPhoto([{ personId: 'person-1', x: 260, y: 130, size: 300 }], 'selfie')
-    const selfie = await agent.post(`/api/guest/sessions/${sessionId}/selfie`).attach('selfie', selfieBuffer, 'selfie.jpg')
+    const selfie = await agent.post(`/api/guest/sessions/${sessionId}/selfie`).set('X-Guest-Token', sessionToken).attach('selfie', selfieBuffer, 'selfie.jpg')
     const searchId = selfie.body.faceSearchId as string
-    const results = await agent.get(`/api/guest/sessions/${sessionId}/searches/${searchId}/results`)
+    const results = await agent.get(`/api/guest/sessions/${sessionId}/searches/${searchId}/results`).set('X-Guest-Token', sessionToken)
     const photoId = results.body.photos[0].photoId as string
 
-    const ok = await agent.post(`/api/guest/sessions/${sessionId}/searches/${searchId}/report-wrong-match`).send({ photoId })
+    const ok = await agent.post(`/api/guest/sessions/${sessionId}/searches/${searchId}/report-wrong-match`).set('X-Guest-Token', sessionToken).send({ photoId })
     expect(ok.status).toBe(201)
 
     const fakePhotoId = '507f1f77bcf86cd799439011'
     const bad = await agent
       .post(`/api/guest/sessions/${sessionId}/searches/${searchId}/report-wrong-match`)
+      .set('X-Guest-Token', sessionToken)
       .send({ photoId: fakePhotoId })
     expect(bad.status).toBe(400)
   })
@@ -179,12 +188,13 @@ describe('Guest journey — event pause + self-service deletion', () => {
     const agent = request.agent(app)
     const landing = await agent.get(`/api/guest/events/${rawToken}`)
     const sessionId = landing.body.sessionId as string
-    await agent.post(`/api/guest/sessions/${sessionId}/consent`).send(validConsentBody)
+    const sessionToken = landing.body.sessionToken as string
+    await agent.post(`/api/guest/sessions/${sessionId}/consent`).set('X-Guest-Token', sessionToken).send(validConsentBody)
 
     await adminClient.post(`/api/admin/events/${eventId}/status`).send({ status: 'PAUSED' })
 
     const selfieBuffer = await renderSyntheticPhoto([{ personId: 'person-1', x: 260, y: 130, size: 300 }], 'selfie')
-    const res = await agent.post(`/api/guest/sessions/${sessionId}/selfie`).attach('selfie', selfieBuffer, 'selfie.jpg')
+    const res = await agent.post(`/api/guest/sessions/${sessionId}/selfie`).set('X-Guest-Token', sessionToken).attach('selfie', selfieBuffer, 'selfie.jpg')
     expect(res.status).toBe(409)
   })
 
@@ -193,12 +203,13 @@ describe('Guest journey — event pause + self-service deletion', () => {
     const agent = request.agent(app)
     const landing = await agent.get(`/api/guest/events/${rawToken}`)
     const sessionId = landing.body.sessionId as string
-    await agent.post(`/api/guest/sessions/${sessionId}/consent`).send(validConsentBody)
+    const sessionToken = landing.body.sessionToken as string
+    await agent.post(`/api/guest/sessions/${sessionId}/consent`).set('X-Guest-Token', sessionToken).send(validConsentBody)
     const selfieBuffer = await renderSyntheticPhoto([{ personId: 'person-1', x: 260, y: 130, size: 300 }], 'selfie')
-    const selfie = await agent.post(`/api/guest/sessions/${sessionId}/selfie`).attach('selfie', selfieBuffer, 'selfie.jpg')
+    const selfie = await agent.post(`/api/guest/sessions/${sessionId}/selfie`).set('X-Guest-Token', sessionToken).attach('selfie', selfieBuffer, 'selfie.jpg')
     const searchId = selfie.body.faceSearchId as string
 
-    const del = await agent.delete(`/api/guest/sessions/${sessionId}`)
+    const del = await agent.delete(`/api/guest/sessions/${sessionId}`).set('X-Guest-Token', sessionToken)
     expect(del.status).toBe(200)
 
     const search = await getPrisma().faceSearch.findUnique({ where: { id: searchId } })
@@ -209,15 +220,28 @@ describe('Guest journey — event pause + self-service deletion', () => {
 })
 
 describe('Guest journey — cross-session privacy', () => {
-  it('refuses to serve results for a session id that does not match the caller\'s own guest cookie', async () => {
+  it('refuses to serve results for a session id the caller has no valid guest token for', async () => {
     const { rawToken } = await setupLiveEvent('person-1')
     const victim = request.agent(app)
     const victimLanding = await victim.get(`/api/guest/events/${rawToken}`)
     const victimSessionId = victimLanding.body.sessionId as string
 
-    // A different "browser" (fresh agent, no cookie for victim's session) tries to access it directly.
+    // A different "browser" (fresh agent, no token for victim's session) tries to access it directly.
     const attacker = request.agent(app)
     const res = await attacker.get(`/api/guest/sessions/${victimSessionId}/searches/000000000000000000000000/results`)
+    expect(res.status).toBe(403)
+  })
+
+  it('refuses access even when the session id is right but the token is wrong', async () => {
+    const { rawToken } = await setupLiveEvent('person-1')
+    const victim = request.agent(app)
+    const victimLanding = await victim.get(`/api/guest/events/${rawToken}`)
+    const victimSessionId = victimLanding.body.sessionId as string
+
+    const attacker = request.agent(app)
+    const res = await attacker
+      .get(`/api/guest/sessions/${victimSessionId}/searches/000000000000000000000000/results`)
+      .set('X-Guest-Token', 'not-the-real-token')
     expect(res.status).toBe(403)
   })
 })
