@@ -129,6 +129,15 @@ function loadEnv(): Env {
     if (!parsed.data.DATABASE_URL) {
       throw new Error('DATABASE_URL is required in production (point it at your MongoDB Atlas cluster).')
     }
+    // LocalStorageProvider writes/reads plain files on local disk — silently falling
+    // back to it (STORAGE_PROVIDER's schema default) in production is what caused
+    // the "presign succeeds, finalize 500s" incident: uploads landed on one
+    // serverless container's ephemeral disk while the later finalize read from a
+    // different one and found nothing. Fail loudly at boot instead of silently
+    // degrading, same pattern as the JWT_SECRET/COOKIE_SECRET check above.
+    if (parsed.data.STORAGE_PROVIDER !== 's3') {
+      throw new Error('STORAGE_PROVIDER must be "s3" in production — local disk storage does not work across serverless instances.')
+    }
   }
   return parsed.data
 }
