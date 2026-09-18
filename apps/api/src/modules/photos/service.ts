@@ -259,8 +259,37 @@ export async function processAcceptedFiles(
 
     for (let i = 0; i < accepted.length; i += UPLOAD_CONCURRENCY) {
       const chunk = accepted.slice(i, i + UPLOAD_CONCURRENCY)
-      const uploaded = await Promise.all(chunk.map((c) => uploadOne(c)))
-      result.accepted.push(...uploaded)
+      const settled = await Promise.all(
+        chunk.map((c) =>
+          uploadOne(c).then(
+            (uploaded) => ({ ok: true as const, uploaded }),
+            (err: unknown) => ({ ok: false as const, file: c.file, err })
+          )
+        )
+      )
+      for (const outcome of settled) {
+        if (outcome.ok) {
+          result.accepted.push(outcome.uploaded)
+          continue
+        }
+        // classifyUploadBatch's own in-batch hash check only catches duplicates
+        // within ONE finalize call — it can't see a second, concurrent finalize call
+        // for the same event (e.g. a double-click, or a client retrying a request it
+        // wrongly believes timed out). Both calls' classify steps can accept the same
+        // file before either has created its Photo row, so their creates race here on
+        // the eventId+fileHash unique index; letting that rejection propagate would
+        // throw out of this whole Promise.all and 500 the entire (otherwise
+        // successful) batch just because one file lost a race it can't avoid.
+        const isDuplicateRace = (outcome.err as { code?: string } | null)?.code === 'P2002'
+        await cleanupOrphanedStorageObject(outcome.file)
+        await cleanupTempFile(outcome.file)
+        result.failed.push({
+          filename: outcome.file.originalFilename,
+          reason: isDuplicateRace
+            ? 'This file was already uploaded by a concurrent request.'
+            : 'Failed to save this photo — please retry.',
+        })
+      }
     }
 
     if (event.status === 'DRAFT' && result.accepted.length > 0) {
