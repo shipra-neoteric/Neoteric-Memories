@@ -464,3 +464,48 @@ export async function deleteAllPhotosForEvent(eventId: string, actor: { id: stri
   await writeAuditLog({ actorId: actor.id, actorRole: actor.role, action: 'photo.delete_all', entityType: 'Event', entityId: eventId, eventId, metadata: { count: photos.length } })
   return { deleted: photos.length }
 }
+
+/**
+ * Truly (not soft-)deletes every Photo row for an event, regardless of its
+ * deletedAt/status — unlike deleteAllPhotosForEvent, which only finds
+ * `deletedAt: null` rows and leaves the row behind as a soft-deleted tombstone, this
+ * removes the documents entirely so the event can be re-tested from a clean slate.
+ * Bypasses classify's `deletedAt: null` blind spot by construction, since a row that
+ * doesn't exist can't occupy the eventId+fileHash unique slot either. Irreversible —
+ * only use this for resetting a non-production/test event, never for real guest data.
+ */
+export async function hardDeleteAllPhotosForEvent(eventId: string, actor: { id: string; role: string }): Promise<{ deleted: number }> {
+  const prisma = getPrisma()
+  const photos = await prisma.photo.findMany({ where: { eventId } })
+  if (photos.length === 0) return { deleted: 0 }
+
+  const indexedFaces = await prisma.indexedFace.findMany({ where: { eventId } })
+  const facesByPhoto = new Map<string, string[]>()
+  for (const face of indexedFaces) {
+    facesByPhoto.set(face.photoId, [...(facesByPhoto.get(face.photoId) ?? []), face.providerFaceId])
+  }
+  const faceSearch = getFaceSearchProvider()
+  for (const [photoId, providerFaceIds] of facesByPhoto) {
+    await faceSearch.removePhotoFaces({ eventId, photoId, providerFaceIds })
+  }
+  if (indexedFaces.length > 0) {
+    await prisma.indexedFace.deleteMany({ where: { eventId } })
+  }
+
+  const keys = photos.flatMap((p) => [p.originalKey, p.thumbnailKey, p.previewKey].filter((k): k is string => !!k))
+  if (keys.length > 0) await getStorageProvider().deleteObjects(keys)
+
+  await prisma.photo.deleteMany({ where: { eventId } })
+  await prisma.photoBatch.deleteMany({ where: { eventId } })
+
+  await writeAuditLog({
+    actorId: actor.id,
+    actorRole: actor.role,
+    action: 'photo.hard_delete_all',
+    entityType: 'Event',
+    entityId: eventId,
+    eventId,
+    metadata: { count: photos.length },
+  })
+  return { deleted: photos.length }
+}
