@@ -24,6 +24,7 @@ import { filesRouter } from './modules/files/router.js'
 import { driveRouter } from './modules/drive/router.js'
 import { jobsRouter } from './modules/jobs/router.js'
 import { driveCallbackRouter } from './modules/drive/callbackRouter.js'
+import { maintenanceRouter } from './modules/maintenance/router.js'
 
 export function createApp() {
   const app = express()
@@ -97,6 +98,7 @@ export function createApp() {
   admin.use('/audit', auditRouter)
   admin.use('/dashboard', dashboardRouter)
   admin.use('/reports', reportsRouter)
+  admin.use('/maintenance', maintenanceRouter)
   app.use('/api/admin', admin)
 
   app.use((req, res) => {
