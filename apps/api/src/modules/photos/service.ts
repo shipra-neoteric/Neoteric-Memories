@@ -147,7 +147,23 @@ export async function classifyUploadBatch(eventId: string, files: UploadFileInpu
   }
 
   for (let i = 0; i < files.length; i += UPLOAD_CONCURRENCY) {
-    await Promise.all(files.slice(i, i + UPLOAD_CONCURRENCY).map((f) => classifyOne(f)))
+    const chunk = files.slice(i, i + UPLOAD_CONCURRENCY)
+    const settled = await Promise.allSettled(chunk.map((f) => classifyOne(f)))
+    for (let j = 0; j < settled.length; j += 1) {
+      const s = settled[j]
+      if (s.status === 'rejected') {
+        // A single file's classify step (S3 read, sniff, hash, dedup lookup) failing
+        // used to throw out of this whole Promise.all/allSettled loop and 500 the
+        // ENTIRE finalize call, rejecting every other file in the batch along with
+        // it — the same class of bug already fixed for processAcceptedFiles below.
+        // One flaky S3 read (e.g. a transient read failure right after the
+        // presigned PUT) should only cost that one file, not the batch.
+        logger.warn({ filename: chunk[j].originalFilename, err: s.reason instanceof Error ? s.reason.message : String(s.reason) }, 'classifyOne failed for one file in the batch')
+        outcome.rejected.push({ filename: chunk[j].originalFilename, reason: 'Could not process this file — please retry.' })
+        await cleanupTempFile(chunk[j])
+        await cleanupOrphanedStorageObject(chunk[j])
+      }
+    }
   }
 
   return outcome
