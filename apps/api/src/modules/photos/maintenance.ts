@@ -24,40 +24,53 @@ import type { getPrisma } from '../../db.js'
  * real database) and from the admin maintenance route (so it can be triggered from an
  * already-authenticated browser session without needing direct DB credentials at all).
  */
+// Bounds how many rows are updated concurrently — the per-row updates below can't
+// be a single bulk updateMany (each one's new fileHash/deletedAt value is computed
+// from that row's own existing data), but awaiting them one at a time made this
+// route 504 (Vercel's function time limit) on a database with more legacy rows than
+// expected. Chunked concurrency keeps this fast regardless of row count without
+// risking overwhelming the DB connection pool.
+const BACKFILL_CONCURRENCY = 20
+
+async function runInChunks<T>(items: T[], fn: (item: T) => Promise<void>): Promise<void> {
+  for (let i = 0; i < items.length; i += BACKFILL_CONCURRENCY) {
+    await Promise.all(items.slice(i, i + BACKFILL_CONCURRENCY).map(fn))
+  }
+}
+
 export async function backfillDeletedPhotoHash(prisma: ReturnType<typeof getPrisma>) {
   const explicitlyDeleted = await prisma.photo.findMany({
     where: { deletedAt: { not: null }, fileHash: { not: { contains: ':deleted:' } } },
   })
-  for (const photo of explicitlyDeleted) {
-    await prisma.photo.update({ where: { id: photo.id }, data: { fileHash: `${photo.fileHash}:deleted:${photo.id}` } })
-  }
+  await runInChunks(explicitlyDeleted, (photo) =>
+    prisma.photo.update({ where: { id: photo.id }, data: { fileHash: `${photo.fileHash}:deleted:${photo.id}` } }).then(() => undefined)
+  )
 
   // Prisma's MongoDB-only `isSet` filter distinguishes "field absent from the
   // document" from "field present and null" — exactly the distinction `deletedAt:
   // null` elsewhere in this codebase can't make (see this file's own doc comment).
   const missingDeletedAt = await prisma.photo.findMany({ where: { deletedAt: { isSet: false } } })
-  let legacyDeletedBackfilled = 0
-  let legacyActiveBackfilled = 0
-  for (const photo of missingDeletedAt) {
-    if (photo.status === 'DELETED') {
-      // Genuinely deleted, just from before deletedAt was ever written on delete —
-      // backfill both fields the same way a delete today would set them.
-      await prisma.photo.update({
+  const legacyDeleted = missingDeletedAt.filter((p) => p.status === 'DELETED')
+  const legacyActive = missingDeletedAt.filter((p) => p.status !== 'DELETED')
+
+  await runInChunks(legacyDeleted, (photo) =>
+    // Genuinely deleted, just from before deletedAt was ever written on delete —
+    // backfill both fields the same way a delete today would set them.
+    prisma.photo
+      .update({
         where: { id: photo.id },
         data: {
           deletedAt: photo.updatedAt,
           fileHash: photo.fileHash.includes(':deleted:') ? photo.fileHash : `${photo.fileHash}:deleted:${photo.id}`,
         },
       })
-      legacyDeletedBackfilled += 1
-    } else {
-      // Genuinely active, just from before Photo creation always wrote `deletedAt:
-      // null` explicitly — backfill the field so it becomes visible to every query
-      // that filters on it, without touching anything else about the row.
-      await prisma.photo.update({ where: { id: photo.id }, data: { deletedAt: null } })
-      legacyActiveBackfilled += 1
-    }
-  }
+      .then(() => undefined)
+  )
 
-  return { hashMangled: explicitlyDeleted.length, legacyDeletedBackfilled, legacyActiveBackfilled }
+  // Genuinely active, just from before Photo creation always wrote `deletedAt:
+  // null` explicitly — this one IS a uniform update, so a single bulk updateMany
+  // instead of a chunked loop.
+  await prisma.photo.updateMany({ where: { id: { in: legacyActive.map((p) => p.id) } }, data: { deletedAt: null } })
+
+  return { hashMangled: explicitlyDeleted.length, legacyDeletedBackfilled: legacyDeleted.length, legacyActiveBackfilled: legacyActive.length }
 }
