@@ -27,7 +27,7 @@ import { Button } from '../../components/ui/Button'
 import { Select } from '../../components/ui/Select'
 import { PageSpinner } from '../../components/ui/EmptyState'
 import { EVENT_STATUS_BADGE, PHOTO_STATUS_BADGE } from '../../lib/statusBadge'
-import { toastError, toastSuccess, confirmDialog } from '../../lib/toast'
+import { toastError, toastInfo, toastSuccess, confirmDialog } from '../../lib/toast'
 import { useAuth } from '../../context/AuthContext'
 
 interface EventDetail {
@@ -304,7 +304,7 @@ export function EventDetailPage() {
     },
     onSuccess: (res) => {
       if (res.accepted.length) toastSuccess(`${res.accepted.length} photo(s) uploaded — processing now`)
-      if (res.duplicates.length) toastError(`${res.duplicates.length} file(s) skipped as duplicates`)
+      if (res.duplicates.length) toastInfo(`${res.duplicates.length} file(s) skipped — already uploaded`)
       if (res.rejected.length) toastError(`${res.rejected.length} file(s) rejected: ${res.rejected[0].reason}`)
       if (res.uploadFailures > 0) toastError(`${res.uploadFailures} file(s) failed to upload — try again`)
       invalidate()
