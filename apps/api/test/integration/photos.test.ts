@@ -58,6 +58,22 @@ describe('Photo upload + processing', () => {
     expect(count).toBe(1)
   })
 
+  it('accepts one copy and flags the rest as duplicates when the same file is uploaded twice in one batch', async () => {
+    const { client, eventId } = await createLiveableEvent()
+    const buffer = await renderSyntheticPhoto([{ personId: 'person-4', x: 150, y: 120, size: 180 }], 'same-batch dup test')
+
+    const res = await client
+      .post(`/api/admin/events/${eventId}/photos`)
+      .attach('photos', buffer, 'a.jpg')
+      .attach('photos', buffer, 'b.jpg')
+    expect(res.status).toBe(201)
+    expect(res.body.accepted).toHaveLength(1)
+    expect(res.body.duplicates).toHaveLength(1)
+
+    const count = await getPrisma().photo.count({ where: { eventId } })
+    expect(count).toBe(1)
+  })
+
   it('reprocessing the same photo (idempotent retry) does not double the indexed face count', async () => {
     const { client, eventId } = await createLiveableEvent()
     const buffer = await renderSyntheticPhoto([{ personId: 'person-3', x: 150, y: 120, size: 180 }], 'idempotent test')
