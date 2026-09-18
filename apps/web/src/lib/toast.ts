@@ -8,6 +8,13 @@ export function toastError(title: string) {
   void Swal.fire({ toast: true, position: 'top-end', icon: 'error', title, showConfirmButton: false, timer: 3500, timerProgressBar: true })
 }
 
+// For an outcome that's expected/harmless rather than a failure (e.g. a file skipped
+// because it's already been uploaded) — the red error icon on toastError reads as
+// "something went wrong" even when nothing did.
+export function toastInfo(title: string) {
+  void Swal.fire({ toast: true, position: 'top-end', icon: 'warning', title, showConfirmButton: false, timer: 3000, timerProgressBar: true })
+}
+
 export async function confirmDialog(opts: {
   title: string
   text?: string
