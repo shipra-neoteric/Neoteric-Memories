@@ -20,16 +20,26 @@ export const errorHandler: ErrorRequestHandler = (err, req, res, _next) => {
   // essential for diagnosing which call failed and why, and none of it is sensitive
   // (unlike the request body, which may contain a selfie/photo — never logged here).
   const meta = err && typeof err === 'object' ? (err as Record<string, unknown>).$metadata : undefined
-  logger.error(
-    {
-      path: req.path,
-      errName: err instanceof Error ? err.name : undefined,
-      errMessage: err instanceof Error ? err.message : String(err),
-      awsErrorCode: err && typeof err === 'object' ? (err as Record<string, unknown>).Code ?? (err as Record<string, unknown>).code : undefined,
-      awsRequestId: meta && typeof meta === 'object' ? (meta as Record<string, unknown>).requestId : undefined,
-      awsHttpStatusCode: meta && typeof meta === 'object' ? (meta as Record<string, unknown>).httpStatusCode : undefined,
-    },
-    'Unhandled error'
-  )
-  res.status(500).json({ error: { code: 'INTERNAL_ERROR', message: 'Something went wrong. Please try again.' } })
+  const errName = err instanceof Error ? err.name : undefined
+  const awsErrorCode = err && typeof err === 'object' ? (err as Record<string, unknown>).Code ?? (err as Record<string, unknown>).code : undefined
+  const awsRequestId = meta && typeof meta === 'object' ? (meta as Record<string, unknown>).requestId : undefined
+  const awsHttpStatusCode = meta && typeof meta === 'object' ? (meta as Record<string, unknown>).httpStatusCode : undefined
+  logger.error({ path: req.path, errName, errMessage: err instanceof Error ? err.message : String(err), awsErrorCode, awsRequestId, awsHttpStatusCode }, 'Unhandled error')
+
+  // Only ever echoes AWS SDK-shaped errors (identified by the $metadata every AWS
+  // SDK v3 error carries) back to the browser — those fields are standardized,
+  // request-scoped diagnostics (error name/code/request id), never credentials or
+  // secrets, unlike an arbitrary JS error's message/stack which might mention a file
+  // path or similar and stays server-log-only. Temporary: pulling this from Vercel's
+  // own function logs was proving hard to get to reliably, so this is here to
+  // unblock diagnosing the current photos/finalize 500 without that — safe to leave
+  // in (it only ever fires for a genuinely unexpected exception, which shouldn't be
+  // happening in steady state), but the awsDebug field can be dropped once resolved.
+  // errName alone (e.g. "TypeError", "MongoServerError") is safe regardless of
+  // source — it's just the JS error class. The AWS-specific fields only get added
+  // when $metadata confirms this really is an AWS SDK error, since a non-AWS
+  // error's message/stack could otherwise mention a file path or similar and stays
+  // server-log-only.
+  const awsDebug = { errName, ...(meta && typeof meta === 'object' ? { awsErrorCode, awsRequestId, awsHttpStatusCode } : {}) }
+  res.status(500).json({ error: { code: 'INTERNAL_ERROR', message: 'Something went wrong. Please try again.', awsDebug } })
 }
