@@ -142,7 +142,7 @@ export async function classifyUploadBatch(eventId: string, files: UploadFileInpu
 // 10-photo upload noticeably slow. Mirrors DRIVE_SYNC_CHUNK_SIZE in
 // modules/drive/service.ts — same reasoning, same bound. Declared once, used by both
 // classifyUploadBatch and processAcceptedFiles.
-const UPLOAD_CONCURRENCY = 5
+const UPLOAD_CONCURRENCY = 10
 
 /**
  * Uploads every accepted file's bytes to storage and creates its Photo row. Stays

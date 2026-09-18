@@ -7,7 +7,7 @@
   "functions": {
     "api/index.js": {
       "includeFiles": "dist/lib/heicConvertWorker.js",
-      "maxDuration": 45
+      "maxDuration": 60
     }
   },
   "crons": [{ "path": "/internal/cron", "schedule": "0 3 * * *" }]
