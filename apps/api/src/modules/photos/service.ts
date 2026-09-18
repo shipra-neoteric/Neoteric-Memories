@@ -100,6 +100,17 @@ export async function classifyUploadBatch(eventId: string, files: UploadFileInpu
   const prisma = getPrisma()
   const outcome: ClassifyOutcome = { accepted: [], duplicates: [], rejected: [] }
 
+  // Tracks hashes already claimed by this same batch (as opposed to an existing DB
+  // row — see the `existing` check below). Without this, two identical files
+  // selected in the same upload (e.g. a duplicate picked twice, or a retry that
+  // re-includes files from a prior partial attempt) both pass the DB check — neither
+  // is in the DB yet — and are both accepted, so their concurrent
+  // `prisma.photo.create()` calls in processAcceptedFiles race on the
+  // eventId+fileHash unique index and the loser throws, 500ing the whole request.
+  // Reserving the hash happens synchronously (no `await` in between), so concurrent
+  // classifyOne calls can't interleave between the check and the reservation.
+  const claimedHashes = new Set<string>()
+
   const classifyOne = async (file: UploadFileInput): Promise<void> => {
     const buffer = await readInputBuffer(file)
     const type = sniffImageType(buffer)
@@ -113,6 +124,13 @@ export async function classifyUploadBatch(eventId: string, files: UploadFileInpu
     // stable identity for "is this the exact same source file", independent of
     // whatever a WASM decoder's output happens to be on a given run.
     const hash = hashFile(buffer)
+    if (claimedHashes.has(hash)) {
+      outcome.duplicates.push({ filename: file.originalFilename })
+      await cleanupTempFile(file)
+      await cleanupOrphanedStorageObject(file)
+      return
+    }
+    claimedHashes.add(hash)
     // Not findUnique on the eventId_fileHash index directly — a soft-deleted photo
     // (deletedAt set) must not count as a duplicate, or the exact same file could
     // never be re-uploaded after being deleted. deletePhoto mangles fileHash on
