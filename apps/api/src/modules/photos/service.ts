@@ -178,9 +178,20 @@ export async function processAcceptedFiles(
   eventId: string,
   accepted: ClassifiedFile[],
   actor: { id: string; role: string }
-): Promise<{ accepted: { photoId: string; filename: string }[]; failed: { filename: string; reason: string }[]; batchId: string | null }> {
-  const result: { accepted: { photoId: string; filename: string }[]; failed: { filename: string; reason: string }[]; batchId: string | null } = {
+): Promise<{
+  accepted: { photoId: string; filename: string }[]
+  duplicates: { filename: string }[]
+  failed: { filename: string; reason: string }[]
+  batchId: string | null
+}> {
+  const result: {
+    accepted: { photoId: string; filename: string }[]
+    duplicates: { filename: string }[]
+    failed: { filename: string; reason: string }[]
+    batchId: string | null
+  } = {
     accepted: [],
+    duplicates: [],
     failed: [],
     batchId: null,
   }
@@ -273,22 +284,26 @@ export async function processAcceptedFiles(
           continue
         }
         // classifyUploadBatch's own in-batch hash check only catches duplicates
-        // within ONE finalize call — it can't see a second, concurrent finalize call
-        // for the same event (e.g. a double-click, or a client retrying a request it
-        // wrongly believes timed out). Both calls' classify steps can accept the same
-        // file before either has created its Photo row, so their creates race here on
-        // the eventId+fileHash unique index; letting that rejection propagate would
-        // throw out of this whole Promise.all and 500 the entire (otherwise
-        // successful) batch just because one file lost a race it can't avoid.
+        // within ONE finalize call — it can't see a second, concurrent call creating
+        // the same photo for this event (e.g. Google Drive sync importing the exact
+        // file an admin is also manually uploading — see modules/drive/service.ts's
+        // own call into uploadPhotoBatch — or a double-click/retried request). Both
+        // calls' classify steps can accept the same file before either has created
+        // its Photo row, so their creates race here on the eventId+fileHash unique
+        // index. The loser isn't a real failure — the photo already exists, just
+        // under the winner's row — so it's reported as a duplicate, same as a file
+        // that was already in the DB before this batch started; only a genuinely
+        // unexpected error goes in `failed`. Letting the race's rejection propagate
+        // instead would throw out of this whole Promise.all and 500 the entire
+        // (otherwise successful) batch just because one file lost a race it can't avoid.
         const isDuplicateRace = (outcome.err as { code?: string } | null)?.code === 'P2002'
         await cleanupOrphanedStorageObject(outcome.file)
         await cleanupTempFile(outcome.file)
-        result.failed.push({
-          filename: outcome.file.originalFilename,
-          reason: isDuplicateRace
-            ? 'This file was already uploaded by a concurrent request.'
-            : 'Failed to save this photo — please retry.',
-        })
+        if (isDuplicateRace) {
+          result.duplicates.push({ filename: outcome.file.originalFilename })
+        } else {
+          result.failed.push({ filename: outcome.file.originalFilename, reason: 'Failed to save this photo — please retry.' })
+        }
       }
     }
 
@@ -331,8 +346,8 @@ export async function uploadPhotoBatch(
   actor: { id: string; role: string }
 ): Promise<UploadOutcome> {
   const classified = await classifyUploadBatch(eventId, files)
-  const { accepted, failed } = await processAcceptedFiles(eventId, classified.accepted, actor)
-  return { accepted, duplicates: classified.duplicates, rejected: [...classified.rejected, ...failed] }
+  const { accepted, duplicates, failed } = await processAcceptedFiles(eventId, classified.accepted, actor)
+  return { accepted, duplicates: [...classified.duplicates, ...duplicates], rejected: [...classified.rejected, ...failed] }
 }
 
 // Long enough to comfortably cover picking files, a slow connection, and a batch of
