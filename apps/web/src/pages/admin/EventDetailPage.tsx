@@ -20,7 +20,7 @@ import {
   Link2,
   Unlink,
 } from 'lucide-react'
-import type { EventType, Role } from '@neoteric-memories/shared'
+import { hasUserPermission, type EventType, type Role } from '@neoteric-memories/shared'
 import { apiFetch, ApiError } from '../../lib/api'
 import { Card } from '../../components/ui/Card'
 import { Button } from '../../components/ui/Button'
@@ -469,7 +469,7 @@ export function EventDetailPage() {
             <div className="flex items-center justify-between mb-3">
               <SectionTitle icon={Upload}>Photographs ({totalPhotos})</SectionTitle>
               <div className="flex gap-2">
-                {totalPhotos > 0 && (
+                {totalPhotos > 0 && user && hasUserPermission(user, 'photo:delete') && (
                   <Button
                     variant="ghost"
                     className="text-red-500"
@@ -554,15 +554,17 @@ export function EventDetailPage() {
                           <RefreshCw className="w-3 h-3" /> Retry
                         </button>
                       )}
-                      <button
-                        onClick={async () => {
-                          const { isConfirmed } = await confirmDialog({ title: 'Delete this photo?', danger: true, confirmButtonText: 'Delete' })
-                          if (isConfirmed) deletePhoto.mutate(p.id)
-                        }}
-                        className="text-[11px] flex items-center gap-1 text-red-500 hover:underline ml-auto"
-                      >
-                        <Trash2 className="w-3 h-3" /> Delete
-                      </button>
+                      {user && hasUserPermission(user, 'photo:delete') && (
+                        <button
+                          onClick={async () => {
+                            const { isConfirmed } = await confirmDialog({ title: 'Delete this photo?', danger: true, confirmButtonText: 'Delete' })
+                            if (isConfirmed) deletePhoto.mutate(p.id)
+                          }}
+                          className="text-[11px] flex items-center gap-1 text-red-500 hover:underline ml-auto"
+                        >
+                          <Trash2 className="w-3 h-3" /> Delete
+                        </button>
+                      )}
                     </div>
                   </div>
                 ))}
