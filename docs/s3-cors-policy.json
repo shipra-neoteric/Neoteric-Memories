@@ -3,7 +3,7 @@
     "AllowedOrigins": ["https://neoteric-memories.vercel.app"],
     "AllowedMethods": ["GET", "PUT"],
     "AllowedHeaders": ["Content-Type"],
-    "ExposeHeaders": [],
+    "ExposeHeaders": ["ETag"],
     "MaxAgeSeconds": 3600
   }
 ]

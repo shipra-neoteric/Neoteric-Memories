@@ -64,33 +64,54 @@ export function GuestResults() {
     // mobile browsers, which then silently block it as a popup — nothing visibly
     // happens and it looks like "downloads don't work". Opening a blank tab
     // synchronously, inside the click handler, before any await, keeps it tied to
-    // the user's tap; we just point it at the real URL once we have it.
+    // the user's tap; only the final (direct-navigation) fallback below actually
+    // uses it — closed immediately in the other two paths.
     const win = window.open('', '_blank')
     try {
       const res = await apiFetch<{ url: string }>(`/api/guest/sessions/${sessionId}/searches/${searchId}/photos/${photoId}/download-url`)
-      // Safari (desktop and iOS) ignores the S3 response's Content-Disposition:
-      // attachment header when a tab is simply navigated to the URL — it just
-      // displays the image inline instead of downloading it, which is what "download
-      // doesn't work in Safari" was. Fetching the bytes and forcing a save via a
-      // blob URL + <a download> makes Safari actually save the file, same as
-      // Chrome/Firefox already did. Requires the S3 bucket's CORS to allow GET from
-      // this origin; if that fetch fails for any reason (CORS not configured, etc),
-      // this falls back to the old direct-navigation behavior rather than erroring.
+      const filename = `neoteric-memories-${photoId}.jpg`
+
+      let blob: Blob | undefined
       try {
-        const blob = await (await fetch(res.url)).blob()
+        blob = await (await fetch(res.url)).blob()
+      } catch {
+        // Most likely the S3 bucket's CORS doesn't allow GET from this origin yet
+        // (see docs/s3-cors-policy.json) — fall through to direct navigation below.
+      }
+
+      // iOS Safari has no real "downloads" concept for a web page and, unlike
+      // desktop browsers, does not honor <a download> for images at all — it just
+      // opens the blob in the same inline viewer navigating to the URL would have.
+      // The Web Share API's native share sheet (which iOS Safari does support) has
+      // a "Save Image"/"Add to Photos" option and is the only way to get an actual
+      // save prompt there, so it's tried first on any device that supports it.
+      if (blob) {
+        const file = new File([blob], filename, { type: blob.type || 'image/jpeg' })
+        if (navigator.canShare?.({ files: [file] })) {
+          win?.close()
+          try {
+            await navigator.share({ files: [file] })
+          } catch {
+            // User cancelled the share sheet — not an error, nothing else to do.
+          }
+          return
+        }
+
+        // Desktop Chrome/Firefox/Safari: a real forced download via a blob URL.
         const blobUrl = URL.createObjectURL(blob)
         const a = document.createElement('a')
         a.href = blobUrl
-        a.download = `neoteric-memories-${photoId}.jpg`
+        a.download = filename
         document.body.appendChild(a)
         a.click()
         a.remove()
         URL.revokeObjectURL(blobUrl)
         win?.close()
-      } catch {
-        if (win) win.location.href = res.url
-        else window.open(res.url, '_blank')
+        return
       }
+
+      if (win) win.location.href = res.url
+      else window.open(res.url, '_blank')
     } catch (err) {
       win?.close()
       toastError(err instanceof ApiError ? err.message : 'Download failed')
