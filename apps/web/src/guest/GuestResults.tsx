@@ -68,8 +68,29 @@ export function GuestResults() {
     const win = window.open('', '_blank')
     try {
       const res = await apiFetch<{ url: string }>(`/api/guest/sessions/${sessionId}/searches/${searchId}/photos/${photoId}/download-url`)
-      if (win) win.location.href = res.url
-      else window.open(res.url, '_blank')
+      // Safari (desktop and iOS) ignores the S3 response's Content-Disposition:
+      // attachment header when a tab is simply navigated to the URL — it just
+      // displays the image inline instead of downloading it, which is what "download
+      // doesn't work in Safari" was. Fetching the bytes and forcing a save via a
+      // blob URL + <a download> makes Safari actually save the file, same as
+      // Chrome/Firefox already did. Requires the S3 bucket's CORS to allow GET from
+      // this origin; if that fetch fails for any reason (CORS not configured, etc),
+      // this falls back to the old direct-navigation behavior rather than erroring.
+      try {
+        const blob = await (await fetch(res.url)).blob()
+        const blobUrl = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = blobUrl
+        a.download = `neoteric-memories-${photoId}.jpg`
+        document.body.appendChild(a)
+        a.click()
+        a.remove()
+        URL.revokeObjectURL(blobUrl)
+        win?.close()
+      } catch {
+        if (win) win.location.href = res.url
+        else window.open(res.url, '_blank')
+      }
     } catch (err) {
       win?.close()
       toastError(err instanceof ApiError ? err.message : 'Download failed')
