@@ -36,6 +36,35 @@ consentRouter.post(
   })
 )
 
+// Edits an existing version's label/wording/on-off item selection in place —
+// distinct from creating a new version. This is fine only because the consent flow
+// is still marked DRAFT throughout the admin UI (pending legal review): once a
+// version has real legal sign-off, editing it after guests have already accepted it
+// would retroactively change what their existing ConsentRecord rows mean, which is
+// why versioning (not editing) is normally the right model. isActive is
+// deliberately not editable here — that's deactivate's job, kept separate so it
+// can't be changed by accident while editing wording.
+consentRouter.patch(
+  '/:id',
+  requirePermission('consent:manage'),
+  validateParams(idParams),
+  validateBody(consentVersionCreateSchema),
+  asyncHandler(async (req, res) => {
+    const version = await getPrisma().consentVersion.update({
+      where: { id: req.params.id },
+      data: { label: req.body.label, requiredText: req.body.requiredText, optionalText: req.body.optionalText },
+    })
+    await writeAuditLog({
+      actorId: req.user!.id,
+      actorRole: req.user!.role,
+      action: 'consent_version.update',
+      entityType: 'ConsentVersion',
+      entityId: version.id,
+    })
+    res.json({ consentVersion: version })
+  })
+)
+
 consentRouter.patch(
   '/:id/deactivate',
   requirePermission('consent:manage'),

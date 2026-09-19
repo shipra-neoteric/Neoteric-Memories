@@ -1,6 +1,5 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { CONSENT_KEYS } from '@neoteric-memories/shared'
 import { useGuestFlow } from './GuestFlowContext'
 import { Button } from '../components/ui/Button'
 import { apiFetch, ApiError } from '../lib/api'
@@ -10,11 +9,13 @@ export function GuestConsent() {
   const { sessionId, consentVersion, consentAlreadyGiven, markConsentGiven, event } = useGuestFlow()
   const navigate = useNavigate()
 
-  const [requiredSearch, setRequiredSearch] = useState(false)
-  const [requiredAccuracy, setRequiredAccuracy] = useState(false)
-  const [requiredRetention, setRequiredRetention] = useState(false)
-  const [optionalContact, setOptionalContact] = useState(false)
-  const [optionalMarketing, setOptionalMarketing] = useState(false)
+  // Which of the 5 possible consent items exist on THIS event's consent version is
+  // an admin's per-version choice (see ConsentVersionsPage.tsx's on/off toggles) —
+  // requiredText/optionalText only ever contain the keys that were switched on, so
+  // this renders whatever subset is actually present instead of assuming a fixed
+  // set of checkboxes.
+  const [requiredChecked, setRequiredChecked] = useState<Record<string, boolean>>({})
+  const [optionalChecked, setOptionalChecked] = useState<Record<string, boolean>>({})
   const [guardianAssisted, setGuardianAssisted] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -40,7 +41,9 @@ export function GuestConsent() {
     )
   }
 
-  const allRequired = requiredSearch && requiredAccuracy && requiredRetention
+  const requiredKeys = Object.keys(consentVersion.requiredText)
+  const optionalKeys = Object.keys(consentVersion.optionalText)
+  const allRequired = requiredKeys.every((key) => requiredChecked[key])
 
   async function submit() {
     setSubmitting(true)
@@ -49,12 +52,8 @@ export function GuestConsent() {
       await apiFetch(`/api/guest/sessions/${sessionId}/consent`, {
         method: 'POST',
         body: {
-          required: {
-            [CONSENT_KEYS.REQUIRED_SEARCH]: true,
-            [CONSENT_KEYS.REQUIRED_ACCURACY]: true,
-            [CONSENT_KEYS.REQUIRED_RETENTION]: true,
-          },
-          optional: { [CONSENT_KEYS.OPTIONAL_CONTACT]: optionalContact, [CONSENT_KEYS.OPTIONAL_MARKETING_USE]: optionalMarketing },
+          required: Object.fromEntries(requiredKeys.map((key) => [key, true])),
+          optional: Object.fromEntries(optionalKeys.map((key) => [key, !!optionalChecked[key]])),
           guardianAssisted,
         },
       })
@@ -85,13 +84,28 @@ export function GuestConsent() {
 
       <div className="space-y-3">
         <p className="text-xs font-bold uppercase tracking-wide text-gray-500">Required</p>
-        <ConsentCheckbox checked={requiredSearch} onChange={setRequiredSearch} text={consentVersion.requiredText[CONSENT_KEYS.REQUIRED_SEARCH]} />
-        <ConsentCheckbox checked={requiredAccuracy} onChange={setRequiredAccuracy} text={consentVersion.requiredText[CONSENT_KEYS.REQUIRED_ACCURACY]} />
-        <ConsentCheckbox checked={requiredRetention} onChange={setRequiredRetention} text={consentVersion.requiredText[CONSENT_KEYS.REQUIRED_RETENTION]} />
+        {requiredKeys.map((key) => (
+          <ConsentCheckbox
+            key={key}
+            checked={!!requiredChecked[key]}
+            onChange={(v) => setRequiredChecked((prev) => ({ ...prev, [key]: v }))}
+            text={consentVersion.requiredText[key]}
+          />
+        ))}
 
-        <p className="text-xs font-bold uppercase tracking-wide text-gray-500 pt-2">Optional — does not affect finding your photos</p>
-        <ConsentCheckbox checked={optionalContact} onChange={setOptionalContact} text={consentVersion.optionalText[CONSENT_KEYS.OPTIONAL_CONTACT]} />
-        <ConsentCheckbox checked={optionalMarketing} onChange={setOptionalMarketing} text={consentVersion.optionalText[CONSENT_KEYS.OPTIONAL_MARKETING_USE]} />
+        {optionalKeys.length > 0 && (
+          <>
+            <p className="text-xs font-bold uppercase tracking-wide text-gray-500 pt-2">Optional — does not affect finding your photos</p>
+            {optionalKeys.map((key) => (
+              <ConsentCheckbox
+                key={key}
+                checked={!!optionalChecked[key]}
+                onChange={(v) => setOptionalChecked((prev) => ({ ...prev, [key]: v }))}
+                text={consentVersion.optionalText[key]}
+              />
+            ))}
+          </>
+        )}
       </div>
 
       {error && <p className="text-xs text-red-500 mt-3">{error}</p>}

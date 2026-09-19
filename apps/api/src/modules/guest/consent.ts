@@ -12,6 +12,19 @@ export async function submitConsent(
   const event = await prisma.event.findUnique({ where: { id: eventId } })
   if (!event?.consentVersionId) throw Errors.conflict('This event has no consent version configured yet')
 
+  const version = await prisma.consentVersion.findUnique({ where: { id: event.consentVersionId } })
+  if (!version) throw Errors.conflict('This event has no consent version configured yet')
+
+  // The zod schema at the route level can't know which of the 5 possible items this
+  // specific consent version actually enabled (an admin can toggle each on/off per
+  // version — see consentVersionCreateSchema's own doc comment), so the real "did
+  // the guest accept everything this version requires" check happens here instead,
+  // against the version's own requiredText keys.
+  const requiredKeys = Object.keys(version.requiredText as Record<string, string>)
+  const accepted = input.required as Record<string, boolean | undefined>
+  const missing = requiredKeys.filter((key) => accepted[key] !== true)
+  if (missing.length > 0) throw Errors.badRequest('All required consent items must be accepted')
+
   return prisma.consentRecord.create({
     data: {
       guestSessionId: sessionId,
