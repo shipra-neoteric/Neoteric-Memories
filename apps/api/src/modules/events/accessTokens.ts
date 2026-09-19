@@ -13,11 +13,22 @@ export interface GeneratedAccessToken {
   expiresAt: Date
 }
 
+/** Builds the guest URL + QR PNG for a raw token — shared by both a fresh generate and a re-display of an already-issued one. */
+async function buildGuestUrlAndQr(rawToken: string, baseUrl?: string): Promise<{ guestUrl: string; qrPngDataUrl: string }> {
+  const appBase = baseUrl ? baseUrl.replace(/\/$/, '') : env.APP_BASE_URL
+  const guestUrl = `${appBase}/e/${rawToken}`
+  const qrPngDataUrl = await QRCode.toDataURL(guestUrl, { errorCorrectionLevel: 'M', margin: 2, width: 512 })
+  return { guestUrl, qrPngDataUrl }
+}
+
 /**
- * Raw tokens are NEVER persisted — only their SHA-256 hash. This means the QR/link
- * can only ever be produced once, at generation time; regenerating creates a new
- * token and immediately revokes the old one ("QR regeneration option that
- * invalidates the old URL").
+ * The raw token is now persisted alongside its hash (see schema.prisma's own doc
+ * comment on EventAccessToken.rawToken) specifically so the SAME link can be shown
+ * again later via getCurrentEventAccessToken, instead of every re-view requiring a
+ * regenerate that invalidates whatever QR/link was already printed/shared.
+ * Regenerating (this function) still creates a brand new token and immediately
+ * revokes the old one — that's still the only way to actually rotate the link, e.g.
+ * if it leaked.
  */
 export async function generateEventAccessToken(
   eventId: string,
@@ -36,16 +47,33 @@ export async function generateEventAccessToken(
   const rawToken = generateSecureToken(DEFAULTS.QR_TOKEN_BYTES)
   const expiresAt = event.guestAccessExpiresAt
   await prisma.eventAccessToken.create({
-    data: { eventId, tokenHash: hashToken(rawToken), expiresAt, createdById: actor.id },
+    data: { eventId, tokenHash: hashToken(rawToken), rawToken, expiresAt, createdById: actor.id },
   })
 
-  const appBase = baseUrl ? baseUrl.replace(/\/$/, '') : env.APP_BASE_URL
-  const guestUrl = `${appBase}/e/${rawToken}`
-  const qrPngDataUrl = await QRCode.toDataURL(guestUrl, { errorCorrectionLevel: 'M', margin: 2, width: 512 })
+  const { guestUrl, qrPngDataUrl } = await buildGuestUrlAndQr(rawToken, baseUrl)
 
   await writeAuditLog({ actorId: actor.id, actorRole: actor.role, action: 'event.access_token_generated', entityType: 'Event', entityId: eventId, eventId })
 
   return { rawToken, guestUrl, qrPngDataUrl, expiresAt }
+}
+
+/**
+ * Re-displays the event's current active token (if any) without creating a new one
+ * or touching the old one at all — what the event page calls on load so an
+ * already-generated QR/link just shows up again instead of requiring
+ * "Regenerate". Returns null when there's no active, non-expired token (or it
+ * predates this field and has no rawToken on file — those can only be regenerated).
+ */
+export async function getCurrentEventAccessToken(eventId: string, baseUrl?: string): Promise<GeneratedAccessToken | null> {
+  const prisma = getPrisma()
+  const token = await prisma.eventAccessToken.findFirst({
+    where: { eventId, isActive: true, expiresAt: { gt: new Date() }, rawToken: { not: null } },
+    orderBy: { createdAt: 'desc' },
+  })
+  if (!token?.rawToken) return null
+
+  const { guestUrl, qrPngDataUrl } = await buildGuestUrlAndQr(token.rawToken, baseUrl)
+  return { rawToken: token.rawToken, guestUrl, qrPngDataUrl, expiresAt: token.expiresAt }
 }
 
 export async function revokeEventAccessTokens(

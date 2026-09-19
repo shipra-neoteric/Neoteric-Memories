@@ -259,8 +259,15 @@ model EventAssignment {
 model EventAccessToken {
   id            String    @id @default(auto()) @map("_id") @db.ObjectId
   eventId       String    @db.ObjectId
-  /// SHA-256 of the raw public token. The raw token is NEVER stored — only issued once in the QR/link.
+  /// SHA-256 of the raw public token — the unique index resolveGuestAccessToken looks
+  /// up by. rawToken (below) is ALSO stored now so the admin UI can redisplay the
+  /// same QR/link on demand instead of needing to regenerate (which invalidates the
+  /// old one) just to view it again.
   tokenHash     String    @unique
+  /// Plaintext of the token above. Optional because rows created before this field
+  /// existed won't have it — those old rows just can't be redisplayed, only
+  /// regenerated, same as before.
+  rawToken      String?
   isActive      Boolean   @default(true)
   expiresAt     DateTime
   createdById   String    @db.ObjectId

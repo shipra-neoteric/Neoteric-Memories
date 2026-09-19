@@ -18,7 +18,7 @@ import { getStorageProvider } from '../../providers/storage/index.js'
 import { sniffImageType, extensionForType } from '../../lib/fileValidation.js'
 import { storageKeys } from '../../lib/storageKeys.js'
 import * as eventService from './service.js'
-import { generateEventAccessToken, revokeEventAccessTokens } from './accessTokens.js'
+import { generateEventAccessToken, getCurrentEventAccessToken, revokeEventAccessTokens } from './accessTokens.js'
 import { checkEventReadiness } from './readiness.js'
 import { deleteEventCascade } from './deleteEventCascade.js'
 import { scopedEventWhere } from './scoping.js'
@@ -113,21 +113,41 @@ eventsRouter.post(
   })
 )
 
+function resolveRequestOrigin(req: import('express').Request): string | undefined {
+  let origin = req.get('origin')
+  if (!origin && req.get('referer')) {
+    try {
+      origin = new URL(req.get('referer')!).origin
+    } catch {
+      // ignore malformed referer
+    }
+  }
+  return origin
+}
+
+// Re-displays whatever token is already active for this event (if any) without
+// generating or revoking anything — what the event page calls on load so a
+// previously-generated QR/link just reappears instead of forcing a Regenerate
+// (which would invalidate anything already printed/shared). Returns `{ token: null }`
+// when there's nothing to show yet.
+eventsRouter.get(
+  '/:id/access-token',
+  requirePermission('event:manage_qr'),
+  validateParams(idParams),
+  requireEventAssignment((req) => req.params.id),
+  asyncHandler(async (req, res) => {
+    const result = await getCurrentEventAccessToken(req.params.id, resolveRequestOrigin(req))
+    res.json({ token: result })
+  })
+)
+
 eventsRouter.post(
   '/:id/access-token',
   requirePermission('event:manage_qr'),
   validateParams(idParams),
   requireEventAssignment((req) => req.params.id),
   asyncHandler(async (req, res) => {
-    let origin = req.get('origin')
-    if (!origin && req.get('referer')) {
-      try {
-        origin = new URL(req.get('referer')!).origin
-      } catch {
-        // ignore malformed referer
-      }
-    }
-    const result = await generateEventAccessToken(req.params.id, req.user!, origin)
+    const result = await generateEventAccessToken(req.params.id, req.user!, resolveRequestOrigin(req))
     res.json(result)
   })
 )

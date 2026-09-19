@@ -236,11 +236,25 @@ export function EventDetailPage() {
     onError: (err) => toastError(err instanceof ApiError ? err.message : 'Could not change status'),
   })
 
+  // Re-fetches whatever token is already active for this event on every load —
+  // the raw token is now persisted server-side (see accessTokens.ts's own doc
+  // comment), so the same QR/link reappears here instead of requiring
+  // "Regenerate" just to view it again.
+  useQuery({
+    queryKey: ['event-access-token', eventId],
+    queryFn: async () => {
+      const res = await apiFetch<{ token: { guestUrl: string; qrPngDataUrl: string; expiresAt: string } | null }>(`/api/admin/events/${eventId}/access-token`)
+      if (res.token) setQrResult(res.token)
+      return res.token
+    },
+    enabled: !!data?.hasActiveAccessToken,
+  })
+
   const generateQr = useMutation({
     mutationFn: () => apiFetch<{ guestUrl: string; qrPngDataUrl: string; expiresAt: string }>(`/api/admin/events/${eventId}/access-token`, { method: 'POST' }),
     onSuccess: (res) => {
       setQrResult(res)
-      toastSuccess('QR code generated — save it now, it will not be shown again')
+      toastSuccess('QR code generated')
       invalidate()
     },
     onError: (err) => toastError(err instanceof ApiError ? err.message : 'Failed to generate QR'),
@@ -583,7 +597,7 @@ export function EventDetailPage() {
               <div className="text-center">
                 <img src={qrResult.qrPngDataUrl} alt="Guest QR code" className="mx-auto w-40 h-40 rounded-lg border border-gray-200 dark:border-gray-700" />
                 <p className="text-[11px] text-gray-500 mt-2 break-all">{qrResult.guestUrl}</p>
-                <p className="text-[11px] text-amber-600 mt-2">This link is shown only once — download or print it now.</p>
+                <p className="text-[11px] text-gray-400 mt-2">This QR/link stays the same for the whole event — guests can keep using it until it closes.</p>
                 <a href={qrResult.qrPngDataUrl} download={`${event.name.replace(/\s+/g, '-')}-qr.png`}>
                   <Button variant="secondary" className="w-full mt-2" icon={<Download className="w-4 h-4" />}>
                     Download QR PNG
@@ -596,7 +610,23 @@ export function EventDetailPage() {
               </div>
             )}
             <div className="flex gap-2 mt-3">
-              <Button variant="primary" className="flex-1" loading={generateQr.isPending} onClick={() => generateQr.mutate()}>
+              <Button
+                variant="primary"
+                className="flex-1"
+                loading={generateQr.isPending}
+                onClick={async () => {
+                  if (data.hasActiveAccessToken) {
+                    const { isConfirmed } = await confirmDialog({
+                      title: 'Regenerate QR code?',
+                      text: 'The current QR/link will stop working immediately for every guest who already has it — only do this if it leaked or needs to be rotated.',
+                      danger: true,
+                      confirmButtonText: 'Regenerate',
+                    })
+                    if (!isConfirmed) return
+                  }
+                  generateQr.mutate()
+                }}
+              >
                 {data.hasActiveAccessToken ? 'Regenerate QR' : 'Generate QR'}
               </Button>
               {data.hasActiveAccessToken && (

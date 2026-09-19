@@ -69,6 +69,40 @@ describe('Event access tokens (QR)', () => {
     expect(revoked?.revokedReason).toMatch(/regenerated/i)
   })
 
+  it('GET re-displays the current active token without creating or revoking anything', async () => {
+    const site = await makeSite()
+    const consent = await makeConsentVersion()
+    const client = await masterAdminClient()
+    const created = await client.post('/api/admin/events').send(validEventPayload(site.id, { consentVersionId: consent.id }))
+    const eventId = created.body.event.id
+
+    const generated = await client.post(`/api/admin/events/${eventId}/access-token`).send({})
+    expect(generated.status).toBe(200)
+
+    const first = await client.get(`/api/admin/events/${eventId}/access-token`)
+    expect(first.status).toBe(200)
+    expect(first.body.token.rawToken).toBe(generated.body.rawToken)
+    expect(first.body.token.guestUrl).toBe(generated.body.guestUrl)
+
+    // Calling it again changes nothing — same token, and no new/revoked rows created.
+    const second = await client.get(`/api/admin/events/${eventId}/access-token`)
+    expect(second.body.token.rawToken).toBe(generated.body.rawToken)
+    const allTokens = await getPrisma().eventAccessToken.findMany({ where: { eventId } })
+    expect(allTokens).toHaveLength(1)
+    expect(allTokens[0].isActive).toBe(true)
+  })
+
+  it('GET returns null when no access token has ever been generated for the event', async () => {
+    const site = await makeSite()
+    const client = await masterAdminClient()
+    const created = await client.post('/api/admin/events').send(validEventPayload(site.id))
+    const eventId = created.body.event.id
+
+    const res = await client.get(`/api/admin/events/${eventId}/access-token`)
+    expect(res.status).toBe(200)
+    expect(res.body.token).toBeNull()
+  })
+
   it('disabling (revoking) the access token makes it resolve as REVOKED', async () => {
     const site = await makeSite()
     const client = await masterAdminClient()
