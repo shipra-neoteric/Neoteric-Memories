@@ -60,13 +60,18 @@ export function GuestResults() {
 
   async function downloadSingle(photoId: string) {
     if (!sessionId || !searchId) return
-    // Opening the tab AFTER an await is no longer treated as user-initiated by most
-    // mobile browsers, which then silently block it as a popup — nothing visibly
-    // happens and it looks like "downloads don't work". Opening a blank tab
-    // synchronously, inside the click handler, before any await, keeps it tied to
-    // the user's tap; only the final (direct-navigation) fallback below actually
-    // uses it — closed immediately in the other two paths.
-    const win = window.open('', '_blank')
+    // iOS (Safari and every other browser there — they're all WebKit) has no real
+    // "downloads" concept for a web page: no <a download>, and a new tab opened via
+    // window.open() + a later redirect is unreliable there (it can flash blank and
+    // get dismissed back to this page instead of showing the image, which is what
+    // still looked broken even with the two fixes before this one). The one thing
+    // that's actually guaranteed to work on iOS is navigating THIS tab directly —
+    // never blocked as a popup since it isn't a new window — to the image, letting
+    // the user long-press to Save/Add to Photos and hit Back to return here.
+    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
+    // Non-iOS: still opened synchronously, before any await, so it isn't blocked as
+    // a popup — used only by the final direct-navigation fallback below.
+    const win = isIOS ? null : window.open('', '_blank')
     try {
       const res = await apiFetch<{ url: string }>(`/api/guest/sessions/${sessionId}/searches/${searchId}/photos/${photoId}/download-url`)
       const filename = `neoteric-memories-${photoId}.jpg`
@@ -79,19 +84,11 @@ export function GuestResults() {
         // (see docs/s3-cors-policy.json) — fall through to direct navigation below.
       }
 
-      // iOS (Safari AND every other browser there, since they all use WebKit) has no
-      // real "downloads" concept for a web page and does not honor <a download> for
-      // images at all — silently doing nothing, which is what still looked broken
-      // even after trying the Web Share API: if canShare rejected the file (some iOS
-      // versions are picky about the exact File/MIME shape) or share() itself threw
-      // for a reason other than the user cancelling, this used to fall into the
-      // anchor-download branch below, which iOS ignores — button press, no visible
-      // result. iOS is now routed straight to direct navigation instead of ever
-      // trying the anchor download, so the user can always at least long-press the
-      // opened image to Save/Add to Photos as a guaranteed-working last resort.
-      const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
-
       if (blob) {
+        // Tried on every platform first, iOS included — this is the only way to get
+        // an actual "Save Image" prompt on iOS (its native share sheet has one), and
+        // it's a nicer in-app experience everywhere else too (no tab/page navigation
+        // at all).
         const file = new File([blob], filename, { type: blob.type || 'image/jpeg' })
         if (navigator.canShare?.({ files: [file] })) {
           try {
@@ -104,8 +101,8 @@ export function GuestResults() {
               win?.close()
               return
             }
-            // Any other share failure falls through to the platform-appropriate
-            // fallback below instead of silently doing nothing.
+            // Any other share failure falls through to the platform fallback below
+            // instead of silently doing nothing.
           }
         }
 
@@ -124,8 +121,13 @@ export function GuestResults() {
         }
       }
 
-      if (win) win.location.href = res.url
-      else window.open(res.url, '_blank')
+      if (isIOS) {
+        window.location.href = res.url
+      } else if (win) {
+        win.location.href = res.url
+      } else {
+        window.open(res.url, '_blank')
+      }
     } catch (err) {
       win?.close()
       toastError(err instanceof ApiError ? err.message : 'Download failed')
