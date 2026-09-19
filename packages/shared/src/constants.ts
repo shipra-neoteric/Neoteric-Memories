@@ -94,7 +94,11 @@ export const DEFAULTS = {
   MAX_SELFIE_ATTEMPTS_PER_SESSION: 5,
   MAX_SEARCHES_PER_DEVICE_PER_EVENT: 8,
   RATE_LIMIT_GUEST_WINDOW_MINUTES: 15,
-  RATE_LIMIT_GUEST_MAX_REQUESTS: 30,
+  // A normal guest journey alone is landing + consent + selfie + results + several
+  // per-photo downloads/report-wrong-match calls -- 30 was tight enough that a
+  // single active testing session (or a real guest retrying a few things) could hit
+  // it. Doubled for headroom; still a real ceiling against abuse from one IP.
+  RATE_LIMIT_GUEST_MAX_REQUESTS: 60,
   MAX_PHOTO_UPLOAD_MB: 25,
   MAX_BATCH_PHOTO_COUNT: 500,
   QR_TOKEN_BYTES: 32,
