@@ -79,35 +79,49 @@ export function GuestResults() {
         // (see docs/s3-cors-policy.json) — fall through to direct navigation below.
       }
 
-      // iOS Safari has no real "downloads" concept for a web page and, unlike
-      // desktop browsers, does not honor <a download> for images at all — it just
-      // opens the blob in the same inline viewer navigating to the URL would have.
-      // The Web Share API's native share sheet (which iOS Safari does support) has
-      // a "Save Image"/"Add to Photos" option and is the only way to get an actual
-      // save prompt there, so it's tried first on any device that supports it.
+      // iOS (Safari AND every other browser there, since they all use WebKit) has no
+      // real "downloads" concept for a web page and does not honor <a download> for
+      // images at all — silently doing nothing, which is what still looked broken
+      // even after trying the Web Share API: if canShare rejected the file (some iOS
+      // versions are picky about the exact File/MIME shape) or share() itself threw
+      // for a reason other than the user cancelling, this used to fall into the
+      // anchor-download branch below, which iOS ignores — button press, no visible
+      // result. iOS is now routed straight to direct navigation instead of ever
+      // trying the anchor download, so the user can always at least long-press the
+      // opened image to Save/Add to Photos as a guaranteed-working last resort.
+      const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
+
       if (blob) {
         const file = new File([blob], filename, { type: blob.type || 'image/jpeg' })
         if (navigator.canShare?.({ files: [file] })) {
-          win?.close()
           try {
             await navigator.share({ files: [file] })
-          } catch {
-            // User cancelled the share sheet — not an error, nothing else to do.
+            win?.close()
+            return
+          } catch (shareErr) {
+            if (shareErr instanceof Error && shareErr.name === 'AbortError') {
+              // User cancelled the share sheet — not an error, nothing else to do.
+              win?.close()
+              return
+            }
+            // Any other share failure falls through to the platform-appropriate
+            // fallback below instead of silently doing nothing.
           }
-          return
         }
 
-        // Desktop Chrome/Firefox/Safari: a real forced download via a blob URL.
-        const blobUrl = URL.createObjectURL(blob)
-        const a = document.createElement('a')
-        a.href = blobUrl
-        a.download = filename
-        document.body.appendChild(a)
-        a.click()
-        a.remove()
-        URL.revokeObjectURL(blobUrl)
-        win?.close()
-        return
+        if (!isIOS) {
+          // Desktop Chrome/Firefox/Safari: a real forced download via a blob URL.
+          const blobUrl = URL.createObjectURL(blob)
+          const a = document.createElement('a')
+          a.href = blobUrl
+          a.download = filename
+          document.body.appendChild(a)
+          a.click()
+          a.remove()
+          URL.revokeObjectURL(blobUrl)
+          win?.close()
+          return
+        }
       }
 
       if (win) win.location.href = res.url
